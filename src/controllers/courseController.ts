@@ -13,6 +13,9 @@ import { AuthRequest } from '../middlewares/auth';
 import { asyncHandler } from '../middlewares/asyncHandler';
 import { QueryHelper } from '../utils/queryHelper';
 import { CloudinaryHelper } from '../utils/cloudinaryHelper';
+import { pushNotification, notifyCourseStudents } from '../utils/pushNotification';
+import { NotificationTemplates } from '../utils/notificationTemplates';
+import { NotificationType } from '../models/Notification';
 
 // ============================================
 // PUBLIC COURSE ENDPOINTS
@@ -25,26 +28,21 @@ export const getAllCourses = asyncHandler(
   async (req: AuthRequest, res: Response) => {
     const { search, page = '1', limit = '10' } = req.query;
 
-    // Only show published courses for public
     const filter: any = { isPublished: true };
 
     let query = Course.find(filter).populate('createdBy', 'firstName lastName');
 
-    // Apply search
-   const queryHelper = new QueryHelper(query, req.query);
+    const queryHelper = new QueryHelper(query, req.query);
 
-query = queryHelper
-  .filter()   
-  .search(['title','description','targetAudience'])
-  .sort()
-  .paginate()
-  .query;
+    query = queryHelper
+      .filter()   
+      .search(['title','description','targetAudience'])
+      .sort()
+      .paginate()
+      .query;
 
-
-    // Get total count
     const total = await Course.countDocuments(filter);
 
-    // Apply sorting and pagination
     query = queryHelper.sort().paginate().query;
 
     const courses = await query;
@@ -76,7 +74,6 @@ export const getCourseById = asyncHandler(
       return;
     }
 
-    // Only show published courses to non-admin users
     if (!course.isPublished && (!req.user || req.user.role !== 'admin')) {
       res.status(404).json({
         success: false,
@@ -85,17 +82,14 @@ export const getCourseById = asyncHandler(
       return;
     }
 
-    // Get course modules
     const modules = await Module.find({ courseId: course._id, isPublished: true })
       .sort({ order: 1 });
 
-    // Get total lessons count
     const totalLessons = await Lesson.countDocuments({
       moduleId: { $in: modules.map(m => m._id) },
       isPublished: true,
     });
 
-    // Get total assessments count
     const totalAssessments = await Assessment.countDocuments({
       courseId: course._id,
       isPublished: true,
@@ -134,21 +128,17 @@ export const getAllCoursesAdmin = asyncHandler(
 
     let query = Course.find(filter).populate('createdBy', 'firstName lastName');
 
-    // Apply search
-   const queryHelper = new QueryHelper(query, req.query);
+    const queryHelper = new QueryHelper(query, req.query);
 
-query = queryHelper
-  .filter()   
-  .search(['title','description','targetAudience'])
-  .sort()
-  .paginate()
-  .query;
+    query = queryHelper
+      .filter()   
+      .search(['title','description','targetAudience'])
+      .sort()
+      .paginate()
+      .query;
 
-
-    // Get total count
     const total = await Course.countDocuments(filter);
 
-    // Apply sorting and pagination
     query = queryHelper.sort().paginate().query;
 
     const courses = await query;
@@ -177,7 +167,6 @@ export const createCourse = asyncHandler(
       return;
     }
 
-    // Check if user is admin or instructor
     if (!['admin', 'instructor'].includes(req.user.role)) {
       res.status(403).json({
         success: false,
@@ -199,7 +188,6 @@ export const createCourse = asyncHandler(
       certificationCriteria,
     } = req.body;
 
-    // Validate required fields
     if (!title || !description || !duration || !targetAudience) {
       res.status(400).json({
         success: false,
@@ -208,7 +196,6 @@ export const createCourse = asyncHandler(
       return;
     }
 
-    // Validate duration object
     if (!duration.weeks || !duration.hoursPerWeek || !duration.totalHours) {
       res.status(400).json({
         success: false,
@@ -217,15 +204,13 @@ export const createCourse = asyncHandler(
       return;
     }
 
-    // Handle cover image upload
     let coverImage: string | undefined;
     if (req.file) {
-      coverImage = req.file.path; // Cloudinary URL
+      coverImage = req.file.path;
     }
 
-    // Admin courses are auto-approved, instructor courses need approval
     const approvalStatus = req.user.role === 'admin' ? 'approved' : 'pending';
-    const isPublished = false; // All new courses start unpublished
+    const isPublished = false;
 
     const course = await Course.create({
       title,
@@ -283,7 +268,6 @@ export const updateCourse = asyncHandler(
       return;
     }
 
-    // Instructor can only update their own courses
     if (req.user.role === 'instructor' && 
         course.createdBy.toString() !== req.user._id.toString()) {
       res.status(403).json({
@@ -307,7 +291,6 @@ export const updateCourse = asyncHandler(
       isPublished,
     } = req.body;
 
-    // Update fields
     if (title) course.title = title;
     if (description) course.description = description;
     if (duration) course.duration = duration;
@@ -319,19 +302,16 @@ export const updateCourse = asyncHandler(
     if (enrollmentLimit !== undefined) course.enrollmentLimit = enrollmentLimit;
     if (certificationCriteria) course.certificationCriteria = certificationCriteria;
 
-    // Admin can directly publish/unpublish
-    // Instructor changes require re-approval
+    const wasPublished = course.isPublished;
+
     if (req.user.role === 'admin') {
       if (isPublished !== undefined) course.isPublished = isPublished;
     } else if (req.user.role === 'instructor') {
-      // If instructor makes changes, course goes back to pending approval
       course.approvalStatus = 'pending';
-      course.isPublished = false; // Unpublish until admin approves again
+      course.isPublished = false;
     }
 
-    // Handle cover image upload
     if (req.file) {
-      // Delete old cover image if exists
       if (course.coverImage) {
         try {
           const publicId = CloudinaryHelper.extractPublicId(course.coverImage);
@@ -347,6 +327,26 @@ export const updateCourse = asyncHandler(
 
     await course.save();
 
+    // Notify students if course was updated and is published
+    if (wasPublished && course.isPublished) {
+      try {
+        const notification = NotificationTemplates.announcement(
+          'Course Updated',
+          `${course.title} has been updated with new content or information`
+        );
+
+        await notifyCourseStudents(course._id, {
+          type: notification.type,
+          title: notification.title,
+          message: notification.message,
+          relatedId: course._id,
+          relatedModel: 'Course',
+        });
+      } catch (error) {
+        console.error('Error sending course update notifications:', error);
+      }
+    }
+
     const message = req.user.role === 'admin'
       ? 'Course updated successfully'
       : 'Course updated and submitted for admin approval';
@@ -359,17 +359,34 @@ export const updateCourse = asyncHandler(
   }
 );
 
-
 // @route PATCH /api/courses/:id/approve
 // @access Admin only
 export const approveCourse = asyncHandler(async (req: AuthRequest, res: Response) => {
   const course = await Course.findById(req.params.id);
   if (!course) return res.status(404).json({ error:"Not found" });
 
+  const wasUnpublished = !course.isPublished;
+
   course.approvalStatus = "approved";
   course.isPublished = true;
 
   await course.save();
+
+  // Notify all students if newly published
+  if (wasUnpublished) {
+    try {
+      const notification = NotificationTemplates.announcement(
+        'New Course Available',
+        `${course.title} is now available for enrollment`
+      );
+
+      // You can notify by role or cohort
+      // For now, this would need a notifyUsersByRole helper
+      // await notifyUsersByRole('student', {...});
+    } catch (error) {
+      console.error('Error sending course approval notifications:', error);
+    }
+  }
 
   return res.json({
     success:true,
@@ -378,21 +395,39 @@ export const approveCourse = asyncHandler(async (req: AuthRequest, res: Response
   });
 });
 
-
 export const rejectCourse = asyncHandler(async (req: AuthRequest, res: Response) => {
-  const course = await Course.findById(req.params.id);
+  const course = await Course.findById(req.params.id).populate('createdBy');
 
-  course!.approvalStatus = "rejected";
-  course!.isPublished = false;
+  if (!course) {
+    return res.status(404).json({ error: "Course not found" });
+  }
 
-  await course!.save();
+  course.approvalStatus = "rejected";
+  course.isPublished = false;
 
-  res.json({
+  await course.save();
+
+  // Notify instructor about rejection
+  try {
+    const instructor = course.createdBy as any;
+    
+    await pushNotification({
+      userId: instructor._id,
+      type: NotificationType.ANNOUNCEMENT,
+      title: 'Course Rejected',
+      message: `Your course "${course.title}" has been rejected. Please review and resubmit.`,
+      relatedId: course._id,
+      relatedModel: 'Course',
+    });
+  } catch (error) {
+    console.error('Error sending rejection notification:', error);
+  }
+
+ return res.json({
     success:true,
     message:"Course rejected"
   });
 });
-
 
 // @desc    Delete course
 // @route   DELETE /api/courses/:id
@@ -409,7 +444,6 @@ export const deleteCourse = asyncHandler(
       return;
     }
 
-    // Check if course has enrollments
     const enrollmentCount = await Enrollment.countDocuments({ courseId: course._id });
     if (enrollmentCount > 0) {
       res.status(400).json({
@@ -419,7 +453,6 @@ export const deleteCourse = asyncHandler(
       return;
     }
 
-    // Delete cover image from Cloudinary
     if (course.coverImage) {
       try {
         const publicId = CloudinaryHelper.extractPublicId(course.coverImage);
@@ -431,23 +464,14 @@ export const deleteCourse = asyncHandler(
       }
     }
 
-    // Delete all related modules and lessons
     const modules = await Module.find({ courseId: course._id });
     const moduleIds = modules.map(m => m._id);
 
-    // Delete all lessons in these modules
     await Lesson.deleteMany({ moduleId: { $in: moduleIds } });
-
-    // Delete all modules
     await Module.deleteMany({ courseId: course._id });
-
-    // Delete all assessments
     await Assessment.deleteMany({ courseId: course._id });
-
-    // Delete all progress records
     await Progress.deleteMany({ courseId: course._id });
 
-    // Delete the course
     await course.deleteOne();
 
     res.status(200).json({
@@ -472,7 +496,6 @@ export const toggleCoursePublish = asyncHandler(
       return;
     }
 
-    // Validate course has content before publishing
     if (!course.isPublished) {
       const moduleCount = await Module.countDocuments({ courseId: course._id });
       if (moduleCount === 0) {
@@ -484,8 +507,30 @@ export const toggleCoursePublish = asyncHandler(
       }
     }
 
+    const wasUnpublished = !course.isPublished;
+
     course.isPublished = !course.isPublished;
     await course.save();
+
+    // Notify enrolled students when course is published
+    if (wasUnpublished && course.isPublished) {
+      try {
+        const notification = NotificationTemplates.announcement(
+          'Course Now Available',
+          `${course.title} is now published and ready to access`
+        );
+
+        await notifyCourseStudents(course._id, {
+          type: notification.type,
+          title: notification.title,
+          message: notification.message,
+          relatedId: course._id,
+          relatedModel: 'Course',
+        });
+      } catch (error) {
+        console.error('Error sending publish notifications:', error);
+      }
+    }
 
     res.status(200).json({
       success: true,
@@ -514,7 +559,6 @@ export const getCourseContent = asyncHandler(
       return;
     }
 
-    // Get all modules with their lessons
     const modules = await Module.find({ courseId: course._id })
       .sort({ order: 1 });
 
@@ -526,7 +570,6 @@ export const getCourseContent = asyncHandler(
     const assessments = await Assessment.find({ courseId: course._id })
       .sort({ order: 1 });
 
-    // Structure the content
     const structuredModules = modules.map(module => ({
       ...module.toObject(),
       lessons: lessons.filter(l => l.moduleId.toString() === module._id.toString()),
@@ -535,7 +578,6 @@ export const getCourseContent = asyncHandler(
       ),
     }));
 
-    // Course-level assessments (not tied to specific module)
     const courseAssessments = assessments.filter(a => !a.moduleId);
 
     res.status(200).json({
@@ -615,7 +657,6 @@ export const getCourseStats = asyncHandler(
       return;
     }
 
-    // Enrollment stats
     const totalEnrollments = await Enrollment.countDocuments({ courseId: course._id });
     const activeEnrollments = await Enrollment.countDocuments({ 
       courseId: course._id, 
@@ -626,7 +667,6 @@ export const getCourseStats = asyncHandler(
       status: 'completed' 
     });
 
-    // Progress stats
     const progressData = await Progress.find({ courseId: course._id });
     const averageProgress = progressData.length > 0
       ? progressData.reduce((sum, p) => sum + p.overallProgress, 0) / progressData.length
@@ -635,12 +675,10 @@ export const getCourseStats = asyncHandler(
       ? progressData.reduce((sum, p) => sum + p.averageScore, 0) / progressData.length
       : 0;
 
-    // Completion rate
     const completionRate = totalEnrollments > 0
       ? (completedEnrollments / totalEnrollments) * 100
       : 0;
 
-    // Content stats
     const totalModules = await Module.countDocuments({ courseId: course._id });
     const totalLessons = await Lesson.countDocuments({ 
       moduleId: { $in: await Module.find({ courseId: course._id }).distinct('_id') }
@@ -698,7 +736,6 @@ export const getMyEnrolledCourses = asyncHandler(
       .populate('courseId')
       .sort({ enrollmentDate: -1 });
 
-    // Get progress for each course
     const coursesWithProgress = await Promise.all(
       enrollments.map(async (enrollment) => {
         const progress = await Progress.findOne({
@@ -724,6 +761,7 @@ export const getMyEnrolledCourses = asyncHandler(
 // @desc    Enroll in a course
 // @route   POST /api/courses/:id/enroll
 // @access  Private (Student)
+
 export const enrollInCourse = asyncHandler(
   async (req: AuthRequest, res: Response) => {
     if (!req.user) {
@@ -752,7 +790,6 @@ export const enrollInCourse = asyncHandler(
       return;
     }
 
-    // Check enrollment limit
     if (course.enrollmentLimit && course.currentEnrollment >= course.enrollmentLimit) {
       res.status(400).json({
         success: false,
@@ -761,7 +798,6 @@ export const enrollInCourse = asyncHandler(
       return;
     }
 
-    // Check if already enrolled
     const existingEnrollment = await Enrollment.findOne({
       studentId: req.user._id,
       courseId: course._id,
@@ -775,7 +811,6 @@ export const enrollInCourse = asyncHandler(
       return;
     }
 
-    // Create enrollment
     const enrollment = await Enrollment.create({
       studentId: req.user._id,
       courseId: course._id,
@@ -783,7 +818,6 @@ export const enrollInCourse = asyncHandler(
       cohort: req.user.cohort,
     });
 
-    // Create initial progress record
     await Progress.create({
       studentId: req.user._id,
       courseId: course._id,
@@ -791,9 +825,24 @@ export const enrollInCourse = asyncHandler(
       overallProgress: 0,
     });
 
-    // Update course enrollment count
     course.currentEnrollment += 1;
     await course.save();
+
+    // Send enrollment notification
+    try {
+      const notification = NotificationTemplates.courseEnrolled(course.title);
+
+      await pushNotification({
+        userId: req.user._id,
+        type: notification.type,
+        title: notification.title,
+        message: notification.message,
+        relatedId: course._id,
+        relatedModel: 'Course',
+      });
+    } catch (error) {
+      console.error('Error sending enrollment notification:', error);
+    }
 
     res.status(201).json({
       success: true,

@@ -6,6 +6,7 @@ import { User } from "../models/user";
 import { Module } from "../models/Module";
 import { Lesson } from "../models/Lesson";
 import { Progress, IProgress, IModuleProgress, ILessonProgress } from "../models/ProgressTrack";
+import { Notification } from "../models/Notification";
 import { ObjectId } from "mongodb";
 
 // ======================================================
@@ -26,13 +27,20 @@ export const getDashboardOverview = asyncHandler(async (req: AuthRequest, res: R
   const totalLessonsCompleted = progressList.reduce((sum, p) => sum + p.completedLessons, 0);
   const totalLessons = progressList.reduce((sum, p) => sum + p.totalLessons, 0);
 
- return res.status(200).json({
+  // Get recent notifications (unread count)
+  const unreadNotifications = await Notification.countDocuments({
+    userId: req.user._id,
+    isRead: false,
+  });
+
+  return res.status(200).json({
     success: true,
     data: {
       totalCourses,
       overallProgress,
       totalLessonsCompleted,
       totalLessons,
+      unreadNotifications,
     },
   });
 });
@@ -69,7 +77,7 @@ export const getEnrolledCourses = asyncHandler(async (req: AuthRequest, res: Res
     });
   });
 
- return res.status(200).json({
+  return res.status(200).json({
     success: true,
     data: Object.values(coursesMap),
   });
@@ -90,7 +98,7 @@ export const getCourseProgress = asyncHandler(async (req: AuthRequest, res: Resp
 
   if (!progress) return res.status(404).json({ success: false, error: "Progress not found" });
 
- return res.status(200).json({ success: true, data: progress });
+  return res.status(200).json({ success: true, data: progress });
 });
 
 // ======================================================
@@ -143,8 +151,8 @@ export const getLessonDetails = asyncHandler(async (req: AuthRequest, res: Respo
   const progress = await Progress.findOne({ studentId: req.user._id, courseId: lesson.moduleId._id });
 
   let lessonProgress: ILessonProgress = {
-      status: "not_started",
-      lessonId: new ObjectId
+    status: "not_started",
+    lessonId: new ObjectId(),
   };
   if (progress) {
     const moduleProgress: IModuleProgress | undefined = progress.modules.find(
@@ -156,11 +164,107 @@ export const getLessonDetails = asyncHandler(async (req: AuthRequest, res: Respo
     }
   }
 
- return res.status(200).json({
+  return res.status(200).json({
     success: true,
     data: {
       lesson,
       progress: lessonProgress,
     },
+  });
+});
+
+// ======================================================
+// GET STUDENT NOTIFICATIONS
+// ======================================================
+export const getNotifications = asyncHandler(async (req: AuthRequest, res: Response) => {
+  if (!req.user) return res.status(401).json({ success: false, error: "Unauthorized" });
+
+  const { page = '1', limit = '20', unreadOnly = 'false' } = req.query;
+
+  const filter: any = { userId: req.user._id };
+  if (unreadOnly === 'true') {
+    filter.isRead = false;
+  }
+
+  const total = await Notification.countDocuments(filter);
+
+  const notifications = await Notification.find(filter)
+    .sort({ createdAt: -1 })
+    .skip((parseInt(page as string) - 1) * parseInt(limit as string))
+    .limit(parseInt(limit as string));
+
+  return res.status(200).json({
+    success: true,
+    count: notifications.length,
+    total,
+    page: parseInt(page as string),
+    pages: Math.ceil(total / parseInt(limit as string)),
+    data: notifications,
+  });
+});
+
+// ======================================================
+// MARK NOTIFICATION AS READ
+// ======================================================
+export const markNotificationRead = asyncHandler(async (req: AuthRequest, res: Response) => {
+  if (!req.user) return res.status(401).json({ success: false, error: "Unauthorized" });
+
+  const { notificationId } = req.params;
+
+  const notification = await Notification.findOneAndUpdate(
+    { _id: notificationId, userId: req.user._id },
+    { isRead: true, readAt: new Date() },
+    { new: true }
+  );
+
+  if (!notification) {
+    return res.status(404).json({ success: false, error: "Notification not found" });
+  }
+
+  return res.status(200).json({
+    success: true,
+    message: "Notification marked as read",
+    data: notification,
+  });
+});
+
+// ======================================================
+// MARK ALL NOTIFICATIONS AS READ
+// ======================================================
+export const markAllNotificationsRead = asyncHandler(async (req: AuthRequest, res: Response) => {
+  if (!req.user) return res.status(401).json({ success: false, error: "Unauthorized" });
+
+  const result = await Notification.updateMany(
+    { userId: req.user._id, isRead: false },
+    { isRead: true, readAt: new Date() }
+  );
+
+  return res.status(200).json({
+    success: true,
+    message: `${result.modifiedCount} notifications marked as read`,
+    count: result.modifiedCount,
+  });
+});
+
+// ======================================================
+// DELETE NOTIFICATION
+// ======================================================
+export const deleteNotification = asyncHandler(async (req: AuthRequest, res: Response) => {
+  if (!req.user) return res.status(401).json({ success: false, error: "Unauthorized" });
+
+  const { notificationId } = req.params;
+
+  const notification = await Notification.findOneAndDelete({
+    _id: notificationId,
+    userId: req.user._id,
+  });
+
+  if (!notification) {
+    return res.status(404).json({ success: false, error: "Notification not found" });
+  }
+
+  return res.status(200).json({
+    success: true,
+    message: "Notification deleted successfully",
   });
 });

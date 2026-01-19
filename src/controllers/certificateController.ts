@@ -9,10 +9,11 @@ import { Course } from "../models/Course";
 import { Module } from "../models/Module";
 import { asyncHandler } from "../middlewares/asyncHandler";
 import { AuthRequest } from "../middlewares/auth";
+import { getIo } from "../config/socket";
+import { NotificationType } from "../models/Notification";
+import { pushNotification } from "../utils/pushNotification";
 
-// ======================================================
-// ISSUE CERTIFICATE (Admin / Instructor)
-// ======================================================
+
 export const issueCertificate = asyncHandler(async (req: AuthRequest, res: Response) => {
   const { studentId, courseId, grade, finalScore, achievements, pdfUrl } = req.body;
 
@@ -41,12 +42,13 @@ export const issueCertificate = asyncHandler(async (req: AuthRequest, res: Respo
     return;
   }
 
-  // Calculate metadata (example)
+  // Calculate metadata
   const modules = await Module.find({ courseId });
   const totalModules = modules.length;
-  const completedProjects = 0; // could integrate with submissions
+  const completedProjects = 0; // Integrate with submissions
   const averageScore = finalScore || 0;
-  const totalHours = modules.reduce((sum: number, m: any) => sum + (m.duration || 0), 0);
+  const totalHours = course.duration.totalHours || 0;
+
   const certificate = await Certificate.create({
     studentId,
     courseId,
@@ -62,31 +64,96 @@ export const issueCertificate = asyncHandler(async (req: AuthRequest, res: Respo
     pdfUrl
   });
 
-  res.status(201).json({ success: true, message: "Certificate issued successfully", data: certificate });
+  // Send notification to student
+  await pushNotification({
+    userId: student._id,
+    type: NotificationType.CERTIFICATE_ISSUED,
+    title: "Certificate Issued",
+    message: `Congratulations! Your certificate for ${course.title} is ready`,
+    relatedId: certificate._id,
+    relatedModel: "Certificate",
+  });
+
+  // Emit real-time notification
+  const io = getIo();
+  io.to(student._id.toString()).emit("notification", {
+    type: NotificationType.CERTIFICATE_ISSUED,
+    title: "Certificate Issued",
+    message: `Your certificate for ${course.title} is ready to download`,
+    certificateId: certificate._id,
+    courseId: course._id,
+    downloadUrl: pdfUrl,
+    timestamp: new Date(),
+  });
+
+  res.status(201).json({
+    success: true,
+    message: "Certificate issued successfully",
+    data: certificate
+  });
 });
 
-// ======================================================
-// GET ALL CERTIFICATES (Admin)
-// ======================================================
-export const getAllCertificates = asyncHandler(async (_req: Request, res: Response) => {
-  const certificates = await Certificate.find().populate("studentId", "firstName lastName email").populate("courseId", "title");
+export const revokeCertificate = asyncHandler(async (req: AuthRequest, res: Response) => {
+  const certificate = await Certificate.findById(req.params.id)
+    .populate('studentId', 'firstName lastName')
+    .populate('courseId', 'title');
+
+  if (!certificate) {
+    res.status(404).json({ success: false, error: "Certificate not found" });
+    return;
+  }
+
+  const oldStatus = certificate.status;
+  certificate.status = CertificateStatus.REVOKED;
+  await certificate.save();
+
+  // Notify student about revocation
+  if (oldStatus !== CertificateStatus.REVOKED) {
+    const student = certificate.studentId as any;
+    const course = certificate.courseId as any;
+
+    await pushNotification({
+      userId: student._id,
+      type: NotificationType.ANNOUNCEMENT,
+      title: "Certificate Revoked",
+      message: `Your certificate for ${course.title} has been revoked`,
+      relatedId: certificate._id,
+      relatedModel: "Certificate",
+    });
+  }
+
+  res.status(200).json({
+    success: true,
+    message: "Certificate revoked successfully",
+    data: certificate
+  });
+});
+
+// ============================================
+// Additional helper exports
+// ============================================
+
+export const getAllCertificates = asyncHandler(async (_req: AuthRequest, res: Response) => {
+  const certificates = await Certificate.find()
+    .populate("studentId", "firstName lastName email")
+    .populate("courseId", "title");
+  
   res.status(200).json({ success: true, count: certificates.length, data: certificates });
 });
 
-// ======================================================
-// GET CERTIFICATES FOR STUDENT
-// ======================================================
 export const getStudentCertificates = asyncHandler(async (req: AuthRequest, res: Response) => {
-  if (!req.user) return res.status(401).json({ success: false, error: "Unauthorized" });
+  if (!req.user) {
+    res.status(401).json({ success: false, error: "Unauthorized" });
+    return;
+  }
 
-  const certificates = await Certificate.find({ studentId: req.user._id }).populate("courseId", "title");
-  return res.status(200).json({ success: true, count: certificates.length, data: certificates });
+  const certificates = await Certificate.find({ studentId: req.user._id })
+    .populate("courseId", "title");
+  
+  res.status(200).json({ success: true, count: certificates.length, data: certificates });
 });
 
-// ======================================================
-// GET CERTIFICATE BY ID
-// ======================================================
-export const getCertificateById = asyncHandler(async (req: Request, res: Response) => {
+export const getCertificateById = asyncHandler(async (req: AuthRequest, res: Response) => {
   const certificate = await Certificate.findById(req.params.id)
     .populate("studentId", "firstName lastName email")
     .populate("courseId", "title");
@@ -97,17 +164,4 @@ export const getCertificateById = asyncHandler(async (req: Request, res: Respons
   }
 
   res.status(200).json({ success: true, data: certificate });
-});
-
-// ======================================================
-// REVOKE CERTIFICATE (Admin / Instructor)
-// ======================================================
-export const revokeCertificate = asyncHandler(async (req: AuthRequest, res: Response) => {
-  const certificate = await Certificate.findById(req.params.id);
-  if (!certificate) return res.status(404).json({ success: false, error: "Certificate not found" });
-
-  certificate.status = CertificateStatus.REVOKED;
-  await certificate.save();
-
-  return res.status(200).json({ success: true, message: "Certificate revoked successfully", data: certificate });
 });
