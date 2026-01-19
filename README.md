@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # AI Accelerator Backend
 
 Backend API for the AI Accelerator Learning Management System.
@@ -117,3 +118,6 @@ Authorization: Bearer <your_token>
 ## 📝 License
 
 MIT
+=======
+# AI-Accelerator
+>>>>>>> dbc7a7a7001f34551f4c40a87288a27bcd64f190
