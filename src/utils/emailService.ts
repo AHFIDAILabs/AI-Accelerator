@@ -13,20 +13,24 @@ class EmailService {
 
   constructor() {
     this.transporter = nodemailer.createTransport({
-      host: process.env.EMAIL_HOST || 'smtp.gmail.com',
-      port: parseInt(process.env.EMAIL_PORT || '587'),
-      secure: false,
+      service: 'gmail', // Gmail specific
       auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASSWORD,
+        user: process.env.EMAIL_USER ,
+        pass: process.env.EMAIL_PASSWORD , // App Password, no spaces!
       },
+    });
+
+    // Verify connection
+    this.transporter.verify((err, success) => {
+      if (err) console.error('❌ SMTP connection failed:', err);
+      else console.log('✅ SMTP connection successful');
     });
   }
 
   async sendEmail(options: EmailOptions): Promise<void> {
     try {
       const mailOptions = {
-        from: process.env.EMAIL_FROM || 'AI Accelerator <noreply@aiaccelerator.com>',
+        from: process.env.EMAIL_FROM,
         to: options.to,
         subject: options.subject,
         text: options.text,
@@ -42,14 +46,13 @@ class EmailService {
     }
   }
 
-  async sendWelcomeEmail(user: { email: string; firstName: string }): Promise<void> {
+  async sendWelcomeEmail(user: { email: string; firstName: string }) {
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
         <h1 style="color: #333;">Welcome to AI Accelerator!</h1>
         <p>Hi ${user.firstName},</p>
         <p>Thank you for joining the AI Accelerator Program. We're excited to have you on board!</p>
         <p>You can now access your dashboard and start your learning journey.</p>
-        <p>If you have any questions, feel free to reach out to our support team.</p>
         <p>Best regards,<br>AI Accelerator Team</p>
       </div>
     `;
@@ -60,6 +63,7 @@ class EmailService {
       html,
     });
   }
+
 
   async sendPasswordResetEmail(user: { email: string; firstName: string }, resetToken: string): Promise<void> {
     const resetUrl = `${process.env.CLIENT_URL}/reset-password/${resetToken}`;

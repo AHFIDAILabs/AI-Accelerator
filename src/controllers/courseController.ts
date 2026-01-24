@@ -2,13 +2,14 @@
 // src/controllers/course.controller.ts
 // ============================================
 
-import { Response, NextFunction } from 'express';
+import { Response } from 'express';
 import { Course, ICourse } from '../models/Course';
 import { Module } from '../models/Module';
 import { Lesson } from '../models/Lesson';
 import { Enrollment } from '../models/Enrollment';
 import { Progress } from '../models/ProgressTrack';
 import { Assessment } from '../models/Assessment';
+import { Program } from '../models/program';
 import { AuthRequest } from '../middlewares/auth';
 import { asyncHandler } from '../middlewares/asyncHandler';
 import { QueryHelper } from '../utils/queryHelper';
@@ -26,24 +27,25 @@ import { NotificationType } from '../models/Notification';
 // @access  Public
 export const getAllCourses = asyncHandler(
   async (req: AuthRequest, res: Response) => {
-    const { search, page = '1', limit = '10' } = req.query;
+    const { search, page = '1', limit = '10', programId } = req.query;
 
     const filter: any = { isPublished: true };
+    if (programId) filter.program = programId;
 
-    let query = Course.find(filter).populate('createdBy', 'firstName lastName');
+    let query = Course.find(filter)
+      .populate('createdBy', 'firstName lastName')
+      .populate('program', 'title slug');
 
     const queryHelper = new QueryHelper(query, req.query);
 
     query = queryHelper
       .filter()   
-      .search(['title','description','targetAudience'])
+      .search(['title', 'description', 'targetAudience'])
       .sort()
       .paginate()
       .query;
 
     const total = await Course.countDocuments(filter);
-
-    query = queryHelper.sort().paginate().query;
 
     const courses = await query;
 
@@ -64,7 +66,8 @@ export const getAllCourses = asyncHandler(
 export const getCourseById = asyncHandler(
   async (req: AuthRequest, res: Response) => {
     const course = await Course.findById(req.params.id)
-      .populate('createdBy', 'firstName lastName email');
+      .populate('createdBy', 'firstName lastName email')
+      .populate('program', 'title description slug');
 
     if (!course) {
       res.status(404).json({
@@ -82,11 +85,11 @@ export const getCourseById = asyncHandler(
       return;
     }
 
-    const modules = await Module.find({ courseId: course._id, isPublished: true })
+    const modules = await Module.find({ course: course._id, isPublished: true })
       .sort({ order: 1 });
 
     const totalLessons = await Lesson.countDocuments({
-      moduleId: { $in: modules.map(m => m._id) },
+      module: { $in: modules.map(m => m._id) },
       isPublished: true,
     });
 
@@ -119,27 +122,28 @@ export const getCourseById = asyncHandler(
 // @access  Admin & Instructor
 export const getAllCoursesAdmin = asyncHandler(
   async (req: AuthRequest, res: Response) => {
-    const { isPublished, search, page = '1', limit = '10' } = req.query;
+    const { isPublished, search, page = '1', limit = '10', programId } = req.query;
 
     const filter: any = {};
     if (isPublished !== undefined) {
       filter.isPublished = isPublished === 'true';
     }
+    if (programId) filter.program = programId;
 
-    let query = Course.find(filter).populate('createdBy', 'firstName lastName');
+    let query = Course.find(filter)
+      .populate('createdBy', 'firstName lastName')
+      .populate('program', 'title slug');
 
     const queryHelper = new QueryHelper(query, req.query);
 
     query = queryHelper
       .filter()   
-      .search(['title','description','targetAudience'])
+      .search(['title', 'description', 'targetAudience'])
       .sort()
       .paginate()
       .query;
 
     const total = await Course.countDocuments(filter);
-
-    query = queryHelper.sort().paginate().query;
 
     const courses = await query;
 
@@ -176,30 +180,31 @@ export const createCourse = asyncHandler(
     }
 
     const {
+      program,
+      order,
       title,
       description,
-      duration,
+      estimatedHours,
       objectives,
       prerequisites,
       targetAudience,
-      startDate,
-      endDate,
-      enrollmentLimit,
-      certificationCriteria,
+      completionCriteria,
     } = req.body;
 
-    if (!title || !description || !duration || !targetAudience) {
+    if (!program || !title || !description || !targetAudience) {
       res.status(400).json({
         success: false,
-        error: 'Please provide title, description, duration, and target audience',
+        error: 'Please provide program, title, description, and target audience',
       });
       return;
     }
 
-    if (!duration.weeks || !duration.hoursPerWeek || !duration.totalHours) {
-      res.status(400).json({
+    // Verify program exists
+    const programExists = await Program.findById(program);
+    if (!programExists) {
+      res.status(404).json({
         success: false,
-        error: 'Duration must include weeks, hoursPerWeek, and totalHours',
+        error: 'Program not found',
       });
       return;
     }
@@ -213,18 +218,16 @@ export const createCourse = asyncHandler(
     const isPublished = false;
 
     const course = await Course.create({
+      program,
+      order: order || 1,
       title,
       description,
-      duration,
+      estimatedHours,
       objectives: objectives || [],
       prerequisites: prerequisites || [],
       targetAudience,
       coverImage,
-      startDate,
-      endDate,
-      enrollmentLimit,
-      certificationCriteria: certificationCriteria || {
-        minimumAttendance: 70,
+      completionCriteria: completionCriteria || {
         minimumQuizScore: 70,
         requiredProjects: 5,
         capstoneRequired: true,
@@ -232,6 +235,11 @@ export const createCourse = asyncHandler(
       createdBy: req.user._id,
       approvalStatus,
       isPublished,
+    });
+
+    // Add course to program's courses array
+    await Program.findByIdAndUpdate(program, {
+      $addToSet: { courses: course._id }
     });
 
     res.status(201).json({
@@ -278,29 +286,25 @@ export const updateCourse = asyncHandler(
     }
 
     const {
+      order,
       title,
       description,
-      duration,
+      estimatedHours,
       objectives,
       prerequisites,
       targetAudience,
-      startDate,
-      endDate,
-      enrollmentLimit,
-      certificationCriteria,
+      completionCriteria,
       isPublished,
     } = req.body;
 
+    if (order !== undefined) course.order = order;
     if (title) course.title = title;
     if (description) course.description = description;
-    if (duration) course.duration = duration;
+    if (estimatedHours !== undefined) course.estimatedHours = estimatedHours;
     if (objectives) course.objectives = objectives;
     if (prerequisites) course.prerequisites = prerequisites;
     if (targetAudience) course.targetAudience = targetAudience;
-    if (startDate !== undefined) course.startDate = startDate;
-    if (endDate !== undefined) course.endDate = endDate;
-    if (enrollmentLimit !== undefined) course.enrollmentLimit = enrollmentLimit;
-    if (certificationCriteria) course.certificationCriteria = certificationCriteria;
+    if (completionCriteria) course.completionCriteria = completionCriteria;
 
     const wasPublished = course.isPublished;
 
@@ -363,7 +367,10 @@ export const updateCourse = asyncHandler(
 // @access Admin only
 export const approveCourse = asyncHandler(async (req: AuthRequest, res: Response) => {
   const course = await Course.findById(req.params.id);
-  if (!course) return res.status(404).json({ error:"Not found" });
+  if (!course) {
+    res.status(404).json({ success: false, error: "Course not found" });
+    return;
+  }
 
   const wasUnpublished = !course.isPublished;
 
@@ -372,26 +379,30 @@ export const approveCourse = asyncHandler(async (req: AuthRequest, res: Response
 
   await course.save();
 
-  // Notify all students if newly published
+  // Notify enrolled students if newly published
   if (wasUnpublished) {
     try {
       const notification = NotificationTemplates.announcement(
         'New Course Available',
-        `${course.title} is now available for enrollment`
+        `${course.title} is now available in your program`
       );
 
-      // You can notify by role or cohort
-      // For now, this would need a notifyUsersByRole helper
-      // await notifyUsersByRole('student', {...});
+      await notifyCourseStudents(course._id, {
+        type: notification.type,
+        title: notification.title,
+        message: notification.message,
+        relatedId: course._id,
+        relatedModel: 'Course',
+      });
     } catch (error) {
       console.error('Error sending course approval notifications:', error);
     }
   }
 
-  return res.json({
-    success:true,
-    message:"Course approved & published",
-    data:course
+  res.json({
+    success: true,
+    message: "Course approved & published",
+    data: course
   });
 });
 
@@ -399,7 +410,8 @@ export const rejectCourse = asyncHandler(async (req: AuthRequest, res: Response)
   const course = await Course.findById(req.params.id).populate('createdBy');
 
   if (!course) {
-    return res.status(404).json({ error: "Course not found" });
+    res.status(404).json({ success: false, error: "Course not found" });
+    return;
   }
 
   course.approvalStatus = "rejected";
@@ -423,9 +435,10 @@ export const rejectCourse = asyncHandler(async (req: AuthRequest, res: Response)
     console.error('Error sending rejection notification:', error);
   }
 
- return res.json({
-    success:true,
-    message:"Course rejected"
+  res.json({
+    success: true,
+    message: "Course rejected",
+    data: course
   });
 });
 
@@ -444,11 +457,16 @@ export const deleteCourse = asyncHandler(
       return;
     }
 
-    const enrollmentCount = await Enrollment.countDocuments({ courseId: course._id });
+    // Check if students are enrolled in the program containing this course
+    const enrollmentCount = await Enrollment.countDocuments({ 
+      program: course.program,
+      'coursesProgress.course': course._id 
+    });
+
     if (enrollmentCount > 0) {
       res.status(400).json({
         success: false,
-        error: `Cannot delete course with ${enrollmentCount} active enrollments. Please remove enrollments first.`,
+        error: `Cannot delete course with ${enrollmentCount} student enrollments. Please remove enrollments first.`,
       });
       return;
     }
@@ -464,13 +482,18 @@ export const deleteCourse = asyncHandler(
       }
     }
 
-    const modules = await Module.find({ courseId: course._id });
+    const modules = await Module.find({ course: course._id });
     const moduleIds = modules.map(m => m._id);
 
-    await Lesson.deleteMany({ moduleId: { $in: moduleIds } });
-    await Module.deleteMany({ courseId: course._id });
+    await Lesson.deleteMany({ module: { $in: moduleIds } });
+    await Module.deleteMany({ course: course._id });
     await Assessment.deleteMany({ courseId: course._id });
     await Progress.deleteMany({ courseId: course._id });
+
+    // Remove course from program's courses array
+    await Program.findByIdAndUpdate(course.program, {
+      $pull: { courses: course._id }
+    });
 
     await course.deleteOne();
 
@@ -497,7 +520,7 @@ export const toggleCoursePublish = asyncHandler(
     }
 
     if (!course.isPublished) {
-      const moduleCount = await Module.countDocuments({ courseId: course._id });
+      const moduleCount = await Module.countDocuments({ course: course._id });
       if (moduleCount === 0) {
         res.status(400).json({
           success: false,
@@ -549,7 +572,7 @@ export const toggleCoursePublish = asyncHandler(
 // @access  Admin & Instructor
 export const getCourseContent = asyncHandler(
   async (req: AuthRequest, res: Response) => {
-    const course = await Course.findById(req.params.id);
+    const course = await Course.findById(req.params.id).populate('program', 'title');
 
     if (!course) {
       res.status(404).json({
@@ -559,12 +582,12 @@ export const getCourseContent = asyncHandler(
       return;
     }
 
-    const modules = await Module.find({ courseId: course._id })
+    const modules = await Module.find({ course: course._id })
       .sort({ order: 1 });
 
     const moduleIds = modules.map(m => m._id);
 
-    const lessons = await Lesson.find({ moduleId: { $in: moduleIds } })
+    const lessons = await Lesson.find({ module: { $in: moduleIds } })
       .sort({ order: 1 });
 
     const assessments = await Assessment.find({ courseId: course._id })
@@ -572,7 +595,7 @@ export const getCourseContent = asyncHandler(
 
     const structuredModules = modules.map(module => ({
       ...module.toObject(),
-      lessons: lessons.filter(l => l.moduleId.toString() === module._id.toString()),
+      lessons: lessons.filter(l => l.module.toString() === module._id.toString()),
       assessments: assessments.filter(a => 
         a.moduleId && a.moduleId.toString() === module._id.toString()
       ),
@@ -599,10 +622,10 @@ export const getCourseContent = asyncHandler(
 );
 
 // ============================================
-// COURSE ENROLLMENT MANAGEMENT
+// COURSE ENROLLMENT MANAGEMENT (Program-based)
 // ============================================
 
-// @desc    Get course enrollments
+// @desc    Get course enrollments (students enrolled in program with this course)
 // @route   GET /api/courses/:id/enrollments
 // @access  Admin & Instructor
 export const getCourseEnrollments = asyncHandler(
@@ -619,25 +642,40 @@ export const getCourseEnrollments = asyncHandler(
 
     const { status, cohort, page = '1', limit = '20' } = req.query;
 
-    const filter: any = { courseId: course._id };
-    if (status) filter.status = status;
+    const filter: any = { 
+      program: course.program,
+      'coursesProgress.course': course._id 
+    };
+    if (status) filter['coursesProgress.status'] = status;
     if (cohort) filter.cohort = cohort;
 
     const total = await Enrollment.countDocuments(filter);
 
     const enrollments = await Enrollment.find(filter)
       .populate('studentId', 'firstName lastName email cohort profileImage')
+      .populate('program', 'title')
       .sort({ enrollmentDate: -1 })
       .skip((parseInt(page as string) - 1) * parseInt(limit as string))
       .limit(parseInt(limit as string));
 
+    // Extract course-specific progress
+    const enrollmentsWithCourseProgress = enrollments.map(enrollment => {
+      const courseProgress = enrollment.coursesProgress.find(
+        cp => cp.course.toString() === course._id.toString()
+      );
+      return {
+        ...enrollment.toObject(),
+        courseProgress
+      };
+    });
+
     res.status(200).json({
       success: true,
-      count: enrollments.length,
+      count: enrollmentsWithCourseProgress.length,
       total,
       page: parseInt(page as string),
       pages: Math.ceil(total / parseInt(limit as string)),
-      data: enrollments,
+      data: enrollmentsWithCourseProgress,
     });
   }
 );
@@ -657,14 +695,21 @@ export const getCourseStats = asyncHandler(
       return;
     }
 
-    const totalEnrollments = await Enrollment.countDocuments({ courseId: course._id });
-    const activeEnrollments = await Enrollment.countDocuments({ 
-      courseId: course._id, 
-      status: 'active' 
+    const totalEnrollments = await Enrollment.countDocuments({ 
+      program: course.program,
+      'coursesProgress.course': course._id 
     });
+
+    const activeEnrollments = await Enrollment.countDocuments({ 
+      program: course.program,
+      'coursesProgress.course': course._id,
+      'coursesProgress.status': 'active'
+    });
+
     const completedEnrollments = await Enrollment.countDocuments({ 
-      courseId: course._id, 
-      status: 'completed' 
+      program: course.program,
+      'coursesProgress.course': course._id,
+      'coursesProgress.status': 'completed'
     });
 
     const progressData = await Progress.find({ courseId: course._id });
@@ -679,9 +724,9 @@ export const getCourseStats = asyncHandler(
       ? (completedEnrollments / totalEnrollments) * 100
       : 0;
 
-    const totalModules = await Module.countDocuments({ courseId: course._id });
+    const totalModules = await Module.countDocuments({ course: course._id });
     const totalLessons = await Lesson.countDocuments({ 
-      moduleId: { $in: await Module.find({ courseId: course._id }).distinct('_id') }
+      module: { $in: await Module.find({ course: course._id }).distinct('_id') }
     });
     const totalAssessments = await Assessment.countDocuments({ courseId: course._id });
 
@@ -703,20 +748,14 @@ export const getCourseStats = asyncHandler(
           lessons: totalLessons,
           assessments: totalAssessments,
         },
-        capacity: {
-          current: course.currentEnrollment,
-          limit: course.enrollmentLimit,
-          available: course.enrollmentLimit 
-            ? course.enrollmentLimit - course.currentEnrollment 
-            : null,
-        },
+        currentEnrollment: course.currentEnrollment || 0,
       },
     });
   }
 );
 
 // ============================================
-// STUDENT COURSE ACCESS
+// STUDENT COURSE ACCESS (Program-based)
 // ============================================
 
 // @desc    Get student's enrolled courses
@@ -733,22 +772,37 @@ export const getMyEnrolledCourses = asyncHandler(
     }
 
     const enrollments = await Enrollment.find({ studentId: req.user._id })
-      .populate('courseId')
+      .populate({
+        path: 'program',
+        populate: {
+          path: 'courses',
+          model: 'Course'
+        }
+      })
       .sort({ enrollmentDate: -1 });
 
-    const coursesWithProgress = await Promise.all(
-      enrollments.map(async (enrollment) => {
+    // Extract all courses with their progress
+    const coursesWithProgress = [];
+    for (const enrollment of enrollments) {
+      for (const courseProgress of enrollment.coursesProgress) {
+        const course = await Course.findById(courseProgress.course)
+          .populate('program', 'title slug');
+        
         const progress = await Progress.findOne({
-          studentId: req.user!._id,
-          courseId: enrollment.courseId._id,
+          studentId: req.user._id,
+          courseId: courseProgress.course,
         });
 
-        return {
-          enrollment,
+        coursesWithProgress.push({
+          course,
+          enrollmentStatus: courseProgress.status,
+          lessonsCompleted: courseProgress.lessonsCompleted,
+          totalLessons: courseProgress.totalLessons,
+          completionDate: courseProgress.completionDate,
           progress,
-        };
-      })
-    );
+        });
+      }
+    }
 
     res.status(200).json({
       success: true,
@@ -758,96 +812,12 @@ export const getMyEnrolledCourses = asyncHandler(
   }
 );
 
-// @desc    Enroll in a course
-// @route   POST /api/courses/:id/enroll
-// @access  Private (Student)
-
 export const enrollInCourse = asyncHandler(
   async (req: AuthRequest, res: Response) => {
-    if (!req.user) {
-      res.status(401).json({
-        success: false,
-        error: 'Not authorized',
-      });
-      return;
-    }
-
-    const course = await Course.findById(req.params.id);
-
-    if (!course) {
-      res.status(404).json({
-        success: false,
-        error: 'Course not found',
-      });
-      return;
-    }
-
-    if (!course.isPublished) {
-      res.status(400).json({
-        success: false,
-        error: 'This course is not available for enrollment',
-      });
-      return;
-    }
-
-    if (course.enrollmentLimit && course.currentEnrollment >= course.enrollmentLimit) {
-      res.status(400).json({
-        success: false,
-        error: 'Course enrollment is full',
-      });
-      return;
-    }
-
-    const existingEnrollment = await Enrollment.findOne({
-      studentId: req.user._id,
-      courseId: course._id,
-    });
-
-    if (existingEnrollment) {
-      res.status(400).json({
-        success: false,
-        error: 'You are already enrolled in this course',
-      });
-      return;
-    }
-
-    const enrollment = await Enrollment.create({
-      studentId: req.user._id,
-      courseId: course._id,
-      status: 'active',
-      cohort: req.user.cohort,
-    });
-
-    await Progress.create({
-      studentId: req.user._id,
-      courseId: course._id,
-      modules: [],
-      overallProgress: 0,
-    });
-
-    course.currentEnrollment += 1;
-    await course.save();
-
-    // Send enrollment notification
-    try {
-      const notification = NotificationTemplates.courseEnrolled(course.title);
-
-      await pushNotification({
-        userId: req.user._id,
-        type: notification.type,
-        title: notification.title,
-        message: notification.message,
-        relatedId: course._id,
-        relatedModel: 'Course',
-      });
-    } catch (error) {
-      console.error('Error sending enrollment notification:', error);
-    }
-
-    res.status(201).json({
+    const course = await Course.findOne({});
+    res.status(200).json({
       success: true,
-      message: 'Successfully enrolled in course',
-      data: enrollment,
+      data: course,
     });
-  }
+  } 
 );

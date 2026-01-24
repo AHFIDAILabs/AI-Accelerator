@@ -10,50 +10,53 @@ export enum EnrollmentStatus {
 
 export interface IEnrollment extends Document {
   studentId: mongoose.Types.ObjectId;
-  courseId: mongoose.Types.ObjectId;
+  program: mongoose.Types.ObjectId;
   status: EnrollmentStatus;
   enrollmentDate: Date;
   completionDate?: Date;
   dropDate?: Date;
   cohort?: string;
   notes?: string;
+
+  coursesProgress: {
+    course: mongoose.Types.ObjectId;
+    status: EnrollmentStatus;
+    lessonsCompleted: number;
+    totalLessons: number;
+    completionDate?: Date;
+  }[];
+
   createdAt: Date;
   updatedAt: Date;
 }
 
-const enrollmentSchema = new Schema<IEnrollment>(
-  {
-    studentId: {
-      type: Schema.Types.ObjectId,
-      ref: 'User',
-      required: true,
-      index: true
-    },
-    courseId: {
-      type: Schema.Types.ObjectId,
-      ref: 'Course',
-      required: true,
-      index: true
-    },
-    status: {
-      type: String,
-      enum: Object.values(EnrollmentStatus),
-      default: EnrollmentStatus.PENDING
-    },
-    enrollmentDate: {
-      type: Date,
-      default: Date.now
-    },
-    completionDate: Date,
-    dropDate: Date,
-    cohort: String,
 
-    notes: String
-  },
-  { timestamps: true }
+const enrollmentSchema = new Schema<IEnrollment>(
+{
+  studentId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  program: { type: Schema.Types.ObjectId, ref: 'Program', required: true, index: true },
+
+  status: { type: String, enum: Object.values(EnrollmentStatus), default: EnrollmentStatus.PENDING },
+
+  enrollmentDate: { type: Date, default: Date.now },
+  completionDate: Date,
+  dropDate: Date,
+  cohort: String,
+  notes: String,
+
+  coursesProgress: [{
+    course: { type: Schema.Types.ObjectId, ref: 'Course', required: true },
+    status: { type: String, enum: Object.values(EnrollmentStatus), default: EnrollmentStatus.PENDING },
+    lessonsCompleted: { type: Number, default: 0 },
+    totalLessons: { type: Number, default: 0 },
+    completionDate: Date
+  }]
+},
+{ timestamps: true }
 );
 
-// Compound index for unique enrollment
-enrollmentSchema.index({ studentId: 1, courseId: 1 }, { unique: true });
+// Unique per student/program
+enrollmentSchema.index({ studentId: 1, program: 1 }, { unique: true });
+
 
 export const Enrollment: Model<IEnrollment> = mongoose.model<IEnrollment>('Enrollment', enrollmentSchema);

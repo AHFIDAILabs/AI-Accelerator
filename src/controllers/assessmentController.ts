@@ -60,7 +60,7 @@ export const createAssessment = asyncHandler(
     // Validate module belongs to course
     if (moduleId) {
       const module = await Module.findById(moduleId);
-      if (!module || module.courseId.toString() !== courseId) {
+      if (!module || module.course._id.toString() !== courseId) {
         res.status(400).json({ success: false, error: "Invalid module" });
         return;
       }
@@ -69,7 +69,7 @@ export const createAssessment = asyncHandler(
     // Validate lesson belongs to module
     if (lessonId) {
       const lesson = await Lesson.findById(lessonId);
-      if (!lesson || (moduleId && lesson.moduleId.toString() !== moduleId)) {
+      if (!lesson || (moduleId && lesson.module._id.toString() !== moduleId)) {
         res.status(400).json({ success: false, error: "Invalid lesson" });
         return;
       }

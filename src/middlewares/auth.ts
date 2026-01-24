@@ -1,76 +1,38 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
-import { User, IUser, UserRole } from '../models/user';
+import { User, IUser, UserRole, UserStatus } from '../models/user';
 
 // Extend Express Request interface
 export interface AuthRequest extends Request {
   user?: IUser;
 }
 
-export const protect = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction
-): Promise<void> => {
+export const protect = async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
-    let token: string | undefined;
+    let token = req.headers.authorization?.startsWith('Bearer')
+      ? req.headers.authorization.split(' ')[1]
+      : req.cookies?.token;
 
-    // Check for token in Authorization header
-    if (
-      req.headers.authorization &&
-      req.headers.authorization.startsWith('Bearer')
-    ) {
-      token = req.headers.authorization.split(' ')[1];
-    }
-    // Check for token in cookies
-    else if (req.cookies && req.cookies.token) {
-      token = req.cookies.token;
-    }
-
-    // Make sure token exists
     if (!token) {
-      res.status(401).json({
-        success: false,
-        error: 'Not authorized to access this route',
-      });
+      res.status(401).json({ success: false, error: 'Not authorized' });
       return;
     }
 
-    try {
-      // Verify token
-      const decoded = jwt.verify(token, process.env.JWT_SECRET as string) as { id: string };
+    const decoded = jwt.verify(token, process.env.JWT_SECRET as string) as { id: string };
+    const user = await User.findById(decoded.id).select('-password');
 
-      // Get user from token
-      const user = await User.findById(decoded.id).select('-password');
-
-      if (!user) {
-        res.status(401).json({
-          success: false,
-          error: 'User no longer exists',
-        });
-        return;
-      }
-
-      // Check if user is active
-      if (user.status !== 'active') {
-        res.status(401).json({
-          success: false,
-          error: 'Your account has been deactivated',
-        });
-        return;
-      }
-
-      // Attach user to request
-      req.user = user;
-      next();
-    } catch (error) {
-      res.status(401).json({
-        success: false,
-        error: 'Not authorized to access this route',
-      });
+    if (!user) {
+      res.status(401).json({ success: false, error: 'User no longer exists' });
       return;
     }
+    if (user.status !== UserStatus.ACTIVE) {
+      res.status(401).json({ success: false, error: 'Your account is not active' });
+      return;
+    }
+
+    req.user = user;
+    next();
   } catch (error) {
-    next(error);
+    res.status(401).json({ success: false, error: 'Not authorized' });
   }
 };

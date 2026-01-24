@@ -167,11 +167,11 @@ export const getMe = asyncHandler(
         status: req.user.status,
         profileImage: req.user.profileImage,
         phoneNumber: req.user.phoneNumber,
-        cohort: req.user.cohort,
-        githubProfile: req.user.githubProfile,
-        linkedinProfile: req.user.linkedinProfile,
-        portfolioUrl: req.user.portfolioUrl,
-        enrollmentDate: req.user.enrollmentDate,
+        cohort: req.user.studentProfile?.cohort,
+        githubProfile: req.user.studentProfile?.githubProfile,
+        linkedinProfile: req.user.studentProfile?.linkedinProfile,
+        portfolioUrl: req.user.studentProfile?.portfolioUrl,
+        enrollmentDate: req.user.studentProfile?.enrollmentDate,
         lastLogin: req.user.lastLogin,
       },
     });
@@ -361,9 +361,9 @@ export const updateProfile = asyncHandler(
     if (firstName) user.firstName = firstName;
     if (lastName) user.lastName = lastName;
     if (phoneNumber !== undefined) user.phoneNumber = phoneNumber;
-    if (githubProfile !== undefined) user.githubProfile = githubProfile;
-    if (linkedinProfile !== undefined) user.linkedinProfile = linkedinProfile;
-    if (portfolioUrl !== undefined) user.portfolioUrl = portfolioUrl;
+    if (githubProfile !== undefined) user.studentProfile = { ...user.studentProfile, githubProfile };
+    if (linkedinProfile !== undefined) user.studentProfile = { ...user.studentProfile, linkedinProfile };
+    if (portfolioUrl !== undefined) user.studentProfile = { ...user.studentProfile, portfolioUrl };
 
     // Update profile picture if file was uploaded
     if (req.file) {
@@ -395,9 +395,9 @@ export const updateProfile = asyncHandler(
         lastName: user.lastName,
         email: user.email,
         phoneNumber: user.phoneNumber,
-        githubProfile: user.githubProfile,
-        linkedinProfile: user.linkedinProfile,
-        portfolioUrl: user.portfolioUrl,
+        githubProfile: user.studentProfile?.githubProfile,
+        linkedinProfile: user.studentProfile?.linkedinProfile,
+        portfolioUrl: user.studentProfile?.portfolioUrl,
         profileImage: user.profileImage,
       },
     });

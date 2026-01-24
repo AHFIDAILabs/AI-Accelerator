@@ -1,4 +1,4 @@
-import mongoose, { Document, Schema, Model } from 'mongoose';
+import mongoose, { Document, Model, Schema } from 'mongoose';
 import bcrypt from 'bcryptjs';
 
 export enum UserRole {
@@ -23,121 +23,96 @@ export interface IUser extends Document {
   status: UserStatus;
   profileImage?: string;
   phoneNumber?: string;
-  cohort?: string;
-  enrollmentDate?: Date;
-  githubProfile?: string;
-  linkedinProfile?: string;
-  portfolioUrl?: string;
+
+  // Role-specific sub-docs
+  studentProfile?: {
+    cohort?: string;
+    enrollmentDate?: Date;
+    githubProfile?: string;
+    linkedinProfile?: string;
+    portfolioUrl?: string;
+  };
+
+  instructorProfile?: {
+    bio?: string;
+    coursesTaught?: mongoose.Types.ObjectId[];
+    linkedinProfile?: string;
+  };
+
+  adminProfile?: {
+    permissions?: string[];
+  };
+
+  // Security
   resetPasswordToken?: string;
   resetPasswordExpire?: Date;
-   refreshTokens: string[];
-   accessToken?: string;
+  refreshTokens: string[];
+  accessToken?: string;
   lastLogin?: Date;
+
   createdAt: Date;
   updatedAt: Date;
-  
+
   // Methods
   matchPassword(enteredPassword: string): Promise<boolean>;
-  getSignedJwtToken(): string;
 }
 
 const userSchema = new Schema<IUser>(
   {
-    firstName: {
-      type: String,
-      required: [true, 'First name is required'],
-      trim: true,
-      maxlength: [50, 'First name cannot exceed 50 characters']
+    firstName: { type: String, required: true, trim: true, maxlength: 50 },
+    lastName: { type: String, required: true, trim: true, maxlength: 50 },
+    email: { 
+      type: String, required: true, unique: true, lowercase: true, trim: true,
+      match: [/^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/, 'Invalid email']
     },
-    lastName: {
-      type: String,
-      required: [true, 'Last name is required'],
-      trim: true,
-      maxlength: [50, 'Last name cannot exceed 50 characters']
-    },
-    email: {
-      type: String,
-      required: [true, 'Email is required'],
-      unique: true,
-      lowercase: true,
-      trim: true,
-      match: [
-        /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/,
-        'Please provide a valid email'
-      ]
-    },
-    password: {
-      type: String,
-      required: [true, 'Password is required'],
-      minlength: [8, 'Password must be at least 8 characters'],
-      select: false
-    },
-    role: {
-      type: String,
-      enum: Object.values(UserRole),
-      default: UserRole.STUDENT
-    },
-    status: {
-      type: String,
-      enum: Object.values(UserStatus),
-      default: UserStatus.ACTIVE
-    },
-    profileImage: {
-      type: String,
-      default: 'default-avatar.png'
-    },
-    phoneNumber: {
-      type: String,
-      trim: true
+    password: { type: String, required: true, minlength: 8, select: false },
+    role: { type: String, enum: Object.values(UserRole), default: UserRole.STUDENT },
+    status: { type: String, enum: Object.values(UserStatus), default: UserStatus.ACTIVE },
+    profileImage: { type: String, default: 'default-avatar.png' },
+    phoneNumber: { type: String, trim: true },
+
+    // Role-specific fields
+    studentProfile: {
+      cohort: String,
+      enrollmentDate: { type: Date, default: Date.now },
+      githubProfile: String,
+      linkedinProfile: String,
+      portfolioUrl: String
     },
 
-      refreshTokens: [{
-      type: String,
-      select: false // Don't return by default
-    }],
-    accessToken: {
-      type: String,
-      select: false // Don't return by default
+    instructorProfile: {
+      bio: String,
+      coursesTaught: [{ type: Schema.Types.ObjectId, ref: 'Course' }],
+      linkedinProfile: String
     },
-    cohort: {
-      type: String,
-      trim: true
+
+    adminProfile: {
+      permissions: [String]
     },
-    enrollmentDate: {
-      type: Date,
-      default: Date.now
-    },
-    githubProfile: String,
-    linkedinProfile: String,
-    portfolioUrl: String,
+
+    // Security fields
     resetPasswordToken: String,
     resetPasswordExpire: Date,
+    refreshTokens: [{ type: String, select: false }],
+    accessToken: { type: String, select: false },
     lastLogin: Date
   },
-
-  
-  {
-    timestamps: true,
-    toJSON: { virtuals: true },
-    toObject: { virtuals: true }
-  }
+  { timestamps: true, toJSON: { virtuals: true }, toObject: { virtuals: true } }
 );
 
-// Hash password before saving
+// 🔹 Password hashing
 userSchema.pre('save', async function() {
-  if (!this.isModified('password')) {
-    return;
-  }
+  if (!this.isModified('password')) return;
   const salt = await bcrypt.genSalt(10);
   this.password = await bcrypt.hash(this.password, salt);
 });
 
-// Match password
+// 🔹 Match password method
 userSchema.methods.matchPassword = async function(enteredPassword: string): Promise<boolean> {
   return await bcrypt.compare(enteredPassword, this.password);
 };
 
-// Virtual for full name
+// 🔹 Virtual for full name
 userSchema.virtual('fullName').get(function() {
   return `${this.firstName} ${this.lastName}`;
 });

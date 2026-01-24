@@ -18,6 +18,8 @@ export enum ResourceType {
   OTHER = "other",
 }
 
+
+
 export interface IResource {
   title: string;
   type: ResourceType;
@@ -27,28 +29,36 @@ export interface IResource {
 }
 
 export interface ILesson extends Document {
-  moduleId: mongoose.Types.ObjectId;
-  dayNumber: number;
+  module: mongoose.Types.ObjectId;
+  order: number;
+
   title: string;
   description: string;
   type: LessonType;
-  duration: number; // in hours
-  content: string; // Rich text
+
+  estimatedMinutes: number;
+  content: string;
   learningObjectives: string[];
-  resources: {
-    video?: IResource[];
-    documents?: IResource[];
-    others?: IResource[];
-  };
-  videoUrl?: string; // Optional single video link
+
+  resources: IResource[];
+
   codeExamples?: string[];
   assignments?: string[];
+
+  isPreview: boolean;
+  isRequired: boolean;
+
+  completionRule: {
+    type: 'view' | 'quiz_pass' | 'assignment_submit' | 'project_review';
+    passingScore?: number;
+  };
+
   isPublished: boolean;
-  order: number;
-  scheduledDate?: Date;
+
   createdAt: Date;
   updatedAt: Date;
 }
+
 
 const resourceSchema = new Schema<IResource>(
   {
@@ -60,34 +70,51 @@ const resourceSchema = new Schema<IResource>(
   },
   { _id: false }
 );
-
 const lessonSchema = new Schema<ILesson>(
-  {
-    moduleId: { type: Schema.Types.ObjectId, ref: "Module", required: true, index: true },
-    dayNumber: { type: Number, required: true },
-    title: { type: String, required: [true, "Lesson title is required"], trim: true },
-    description: { type: String, required: true },
-    type: { type: String, enum: Object.values(LessonType), required: true },
-    duration: { type: Number, required: true, min: 0 },
-    content: { type: String, required: true },
-    learningObjectives: [{ type: String, required: true }],
-    resources: {
-      video: [resourceSchema],
-      documents: [resourceSchema],
-      others: [resourceSchema],
-      default: {},
-    },
-    videoUrl: String,
-    codeExamples: [String],
-    assignments: [String],
-    isPublished: { type: Boolean, default: false },
-    order: { type: Number, required: true },
-    scheduledDate: Date,
+{
+  module: {
+    type: Schema.Types.ObjectId,
+    ref: "Module",
+    required: true,
+    index: true
   },
-  { timestamps: true }
+
+  order: { type: Number, required: true },
+
+  title: { type: String, required: true, trim: true },
+  description: { type: String, required: true },
+
+  type: { type: String, enum: Object.values(LessonType), required: true },
+
+  estimatedMinutes: { type: Number, required: true, min: 1 },
+
+  content: { type: String, required: true },
+
+  learningObjectives: [{ type: String }],
+
+  resources: [resourceSchema],
+
+  codeExamples: [String],
+  assignments: [String],
+
+  isPreview: { type: Boolean, default: false },
+  isRequired: { type: Boolean, default: true },
+
+  completionRule: {
+    type: {
+      type: String,
+      enum: ['view', 'quiz_pass', 'assignment_submit', 'project_review'],
+      default: 'view'
+    },
+    passingScore: Number
+  },
+
+  isPublished: { type: Boolean, default: false }
+},
+{ timestamps: true }
 );
 
-// Compound index to ensure unique day per module
-lessonSchema.index({ moduleId: 1, dayNumber: 1 }, { unique: true });
+// Order unique per module
+lessonSchema.index({ module: 1, order: 1 }, { unique: true });
 
 export const Lesson: Model<ILesson> = mongoose.model<ILesson>("Lesson", lessonSchema);

@@ -27,6 +27,9 @@ import studentRoutes from './routes/studentRouter';
 import enrollmentRouter from './routes/enrollmentRouter';
 import certificateRoutes from './routes/certificateRouter';
 import notificationRouter from './routes/notificationRouter';
+import progressRouter from './routes/progressRouter';
+import submissionRouter from './routes/submissionRouter';
+import programRouter from './routes/programRouter';
 
 // Error handler middleware
 import { errorHandler } from './middlewares/errorHandler';
@@ -150,6 +153,9 @@ app.get('/api', (_req: Request, res: Response) => {
       enrollments: '/api/v1/enrollments',
       certificates: '/api/v1/certificates',
       notifications: '/api/v1/notifications',
+      progress: '/api/v1/progress',
+      program: '/api/v1/program',
+      submission: '/api/v1/submission',
     },
   });
 });
@@ -165,6 +171,9 @@ app.use('/api/v1/students', studentRoutes);
 app.use('/api/v1/enrollments', enrollmentRouter);
 app.use('/api/v1/certificates', certificateRoutes);
 app.use('/api/v1/notifications', notificationRouter);
+app.use('/api/v1/progress', progressRouter);
+app.use("/api/v1/program", programRouter);
+app.use("/api/v1/submission", submissionRouter);
 
 // Error Handling
 app.use(notFound);

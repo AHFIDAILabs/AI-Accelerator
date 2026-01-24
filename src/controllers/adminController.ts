@@ -3,18 +3,19 @@
 // ============================================
 import { Response } from 'express';
 import mongoose from 'mongoose';
-import { User, IUser, UserRole, UserStatus } from '../models/user';
+import { Program } from '../models/program';
 import { Course } from '../models/Course';
+import { User, UserRole, UserStatus } from '../models/user';
 import { Enrollment } from '../models/Enrollment';
 import { Progress } from '../models/ProgressTrack';
-import { Certificate } from '../models/Certificate';
 import { AuthRequest } from '../middlewares/auth';
 import { asyncHandler } from '../middlewares/asyncHandler';
 import { QueryHelper } from '../utils/queryHelper';
-import { CloudinaryHelper } from '../utils/cloudinaryHelper';
 import { pushNotification } from '../utils/pushNotification';
-import { getIo } from '../config/socket'; 
+import { getIo } from '../config/socket';
 import { NotificationType } from '../models/Notification';
+import { Certificate } from '../models/Certificate';
+import { CloudinaryHelper } from '../utils/cloudinaryHelper';
 
 
 // ============================================
@@ -112,7 +113,7 @@ export const updateUser = asyncHandler(
     if (firstName) user.firstName = firstName;
     if (lastName) user.lastName = lastName;
     if (email) user.email = email;
-    if (cohort !== undefined) user.cohort = cohort;
+    if (cohort !== undefined && user.studentProfile) user.studentProfile.cohort = cohort;
     if (phoneNumber !== undefined) user.phoneNumber = phoneNumber;
     if (role && Object.values(UserRole).includes(role)) user.role = role;
     if (status && Object.values(UserStatus).includes(status)) user.status = status;
@@ -326,7 +327,7 @@ export const getStudentProgress = asyncHandler(
           id: student._id,
           name: `${student.firstName} ${student.lastName}`,
           email: student.email,
-          cohort: student.cohort,
+          cohort: student.studentProfile?.cohort,
         },
         progress,
         enrollments,
@@ -531,13 +532,17 @@ export const bulkEnrollStudents = asyncHandler(
         const enrollment = await Enrollment.create({
           studentId,
           courseId,
-          cohort: cohort || student.cohort,
+          cohort: cohort || student.studentProfile?.cohort,
           status: 'active',
         });
 
         await Progress.create({ studentId, courseId, modules: [], overallProgress: 0 });
         enrollments.push(enrollment);
-        course.currentEnrollment += 1;
+        if (typeof course.currentEnrollment === 'number') {
+          course.currentEnrollment += 1;
+        } else {
+          course.currentEnrollment = 1;
+        }
 
         // Notify each student about enrollment
         const notification = await pushNotification({
@@ -658,3 +663,170 @@ export const getCourseCompletionReport = asyncHandler(
     });
   }
 );
+
+
+// ============================================
+// PROGRAM CRUD
+// ============================================
+
+// @desc    Create a new program
+// @route   POST /api/admin/programs
+// @access  Admin
+export const createProgram = asyncHandler(async (req: AuthRequest, res: Response) => {
+  const { title, description, courseIds, isPublished } = req.body;
+
+  const program = await Program.create({
+    title,
+    description,
+    courseIds,
+    isPublished: !!isPublished,
+    createdBy: req.user?._id,
+  });
+
+  res.status(201).json({
+    success: true,
+    message: 'Program created successfully',
+    data: program,
+  });
+});
+
+// @desc    Get all programs with filtering, pagination
+// @route   GET /api/admin/programs
+// @access  Admin
+export const getAllPrograms = asyncHandler(async (req: AuthRequest, res: Response) => {
+  const { search, isPublished, page = '1', limit = '10' } = req.query;
+
+  let query = Program.find(isPublished !== undefined ? { isPublished } : {});
+  const queryHelper = new QueryHelper(query, req.query);
+  queryHelper.search(['title', 'description']);
+  query = queryHelper.sort().paginate().query;
+
+  const total = await Program.countDocuments();
+  const programs = await query.populate('courseIds', 'title');
+
+  res.status(200).json({
+    success: true,
+    count: programs.length,
+    total,
+    page: parseInt(page as string),
+    pages: Math.ceil(total / parseInt(limit as string)),
+    data: programs,
+  });
+});
+
+// @desc    Get program by ID
+// @route   GET /api/admin/programs/:id
+// @access  Admin
+export const getProgramById = asyncHandler(async (req: AuthRequest, res: Response) => {
+  const program = await Program.findById(req.params.id).populate('courseIds', 'title description isPublished');
+
+  if (!program) return res.status(404).json({ success: false, error: 'Program not found' });
+
+  return res.status(200).json({
+    success: true,
+    data: program,
+  });
+});
+
+// @desc    Update program
+// @route   PUT /api/admin/programs/:id
+// @access  Admin
+export const updateProgram = asyncHandler(async (req: AuthRequest, res: Response) => {
+  const { title, description, courses, isPublished } = req.body;
+  const program = await Program.findById(req.params.id);
+  if (!program) return res.status(404).json({ success: false, error: 'Program not found' });
+
+  if (title) program.title = title;
+  if (description) program.description = description;
+  // Update course IDs and note: we have courses as type objectId array
+if (courses && Array.isArray(courses)) {
+    program.courses = courses.map((c: string) => new mongoose.Types.ObjectId(c));
+  }
+  if (isPublished !== undefined) program.isPublished = isPublished;
+
+  await program.save();
+
+ return res.status(200).json({
+    success: true,
+    message: 'Program updated successfully',
+    data: program,
+  });
+});
+
+// @desc    Delete program
+// @route   DELETE /api/admin/programs/:id
+// @access  Admin
+export const deleteProgram = asyncHandler(async (req: AuthRequest, res: Response) => {
+  const program = await Program.findById(req.params.id);
+  if (!program) return res.status(404).json({ success: false, error: 'Program not found' });
+
+  await program.deleteOne();
+
+ return res.status(200).json({
+    success: true,
+    message: 'Program deleted successfully',
+  });
+});
+
+// ============================================
+// PROGRAM REPORTS
+// ============================================
+
+// @desc    Get program student progress
+// @route   GET /api/admin/programs/:id/progress
+// @access  Admin
+export const getProgramProgress = asyncHandler(async (req: AuthRequest, res: Response) => {
+  const programId = req.params.id;
+
+  // Fetch program with courses
+  const program = await Program.findById(programId).populate('courses', 'title');
+  if (!program) {
+    return res.status(404).json({ success: false, error: 'Program not found' });
+  }
+
+  const courseIds = program.courses.map((c: any) => c._id);
+
+  // Get all enrollments for the program courses
+  const enrollments = await Enrollment.find({ program: program._id })
+    .populate('studentId', 'firstName lastName email');
+
+  // Fetch all progress in a single query for efficiency
+  const studentIds = enrollments.map(e => e.studentId._id);
+  const progressList = await Progress.find({
+    studentId: { $in: studentIds },
+    courseId: { $in: courseIds },
+  });
+
+  // Map progress to each enrollment
+  const studentProgress = enrollments.map(enrollment => {
+    const studentCourseProgress = progressList.filter(
+      p => p.studentId.toString() === enrollment.studentId._id.toString()
+    ).map(p => ({
+      course: p.courseId,
+      overallProgress: p.overallProgress,
+      completedLessons: p.completedLessons,
+      totalLessons: p.totalLessons,
+      completedAssessments: p.completedAssessments,
+      totalAssessments: p.totalAssessments,
+      averageScore: p.averageScore,
+      totalTimeSpent: p.totalTimeSpent,
+      lastAccessedAt: p.lastAccessedAt,
+      completedAt: p.completedAt,
+    }));
+
+    return {
+      student: enrollment.studentId,
+      coursesProgress: studentCourseProgress,
+      enrollmentStatus: enrollment.status,
+      cohort: enrollment.cohort,
+    };
+  });
+
+  return res.status(200).json({
+    success: true,
+    data: {
+      program,
+      studentProgress,
+    },
+  });
+});
