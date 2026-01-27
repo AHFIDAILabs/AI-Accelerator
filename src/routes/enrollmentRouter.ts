@@ -9,6 +9,10 @@ import {
   getStudentEnrollments,
   updateEnrollmentStatus,
   deleteEnrollment,
+  getEnrollmentById,
+  getEnrollmentStats,
+  selfEnrollInProgram,
+  updateCourseProgress,
 } from "../controllers/enrollmentController";
 import { protect } from "../middlewares/auth";
 import { adminOnly } from "../middlewares/adminAuth";
@@ -43,5 +47,17 @@ enrollmentRouter.put("/:enrollmentId", updateEnrollmentStatus);
 
 // Delete enrollment
 enrollmentRouter.delete("/:enrollmentId", deleteEnrollment);
+
+// Student self-enroll
+enrollmentRouter.post("/program/:programId/self-enroll", selfEnrollInProgram);
+
+// Get single enrollment
+enrollmentRouter.get("/:enrollmentId", getEnrollmentById);
+
+// Update course progress inside enrollment
+enrollmentRouter.put("/:enrollmentId/course/:courseId", updateCourseProgress);
+
+// Stats
+enrollmentRouter.get("/stats/overview", getEnrollmentStats);
 
 export default enrollmentRouter;

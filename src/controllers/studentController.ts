@@ -673,22 +673,70 @@ export const getLearningStatistics = asyncHandler(async (req: AuthRequest, res: 
 
 
 // ============================================
-// Get enrolled Courses for a Student
+// GET ENROLLED COURSES FOR A STUDENT
 // ============================================
 export const getEnrolledCourses = asyncHandler(async (req: AuthRequest, res: Response) => { 
   if (!req.user) {
     res.status(401).json({ success: false, error: "Unauthorized" });
     return;
   }
-  const date = Date.now();
-  const days = Date.now() - date;
-  const total = Date.now() - date;
-  res.status(200).json({
+
+  // Get all enrollments for the student
+  const enrollments = await Enrollment.find({ studentId: req.user._id })
+    .populate({
+      path: 'program',
+      select: 'title description slug coverImage estimatedHours courses',
+      populate: {
+        path: 'courses',
+        select: 'title order estimatedHours coverImage'
+      }
+    })
+    .sort({ enrollmentDate: -1 });
+
+  if (!enrollments.length) {
+    return res.status(200).json({
+      success: true,
+      count: 0,
+      data: []
+    });
+  }
+
+  // Map courses with progress
+  const coursesWithProgress = await Promise.all(
+    enrollments.flatMap(enrollment => enrollment.coursesProgress.map(async cp => {
+      const course = (enrollment.program as any).courses.find(
+        (c: any) => c._id.toString() === cp.course.toString()
+      );
+
+      if (!course) return null;
+
+      const progress = await Progress.findOne({
+        studentId: req.user!._id,
+        courseId: course._id
+      });
+
+      return {
+        course: course.toObject(),
+        program: {
+          _id: (enrollment.program as any)._id,
+          title: (enrollment.program as any).title
+        },
+        enrollmentStatus: cp.status,
+        lessonsCompleted: cp.lessonsCompleted || 0,
+        totalLessons: cp.totalLessons || 0,
+        progress: progress ? {
+          overallProgress: progress.overallProgress,
+          completedAssessments: progress.completedAssessments,
+          averageScore: progress.averageScore,
+          lastAccessedAt: progress.lastAccessedAt
+        } : null
+      };
+    }))
+  );
+
+ return res.status(200).json({
     success: true,
-    data: {
-      date,
-      days,
-      total
-    }
+    count: coursesWithProgress.filter(c => c !== null).length,
+    data: coursesWithProgress.filter(c => c !== null)
   });
-} );
+});

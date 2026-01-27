@@ -41,7 +41,6 @@ const courseRouter = express.Router();
 // PUBLIC ROUTES
 // ============================================
 courseRouter.get('/', getAllCourses);
-courseRouter.get('/:id', getCourseById);
 
 // ============================================
 // STUDENT ROUTES (Require Authentication)
@@ -128,5 +127,9 @@ courseRouter.get(
   authorize(UserRole.ADMIN, UserRole.INSTRUCTOR),
   getCourseStats
 );
+
+
+courseRouter.get('/:id', getCourseById);
+
 
 export default courseRouter;

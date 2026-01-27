@@ -19,44 +19,31 @@ import {
 import { protect } from '../middlewares/auth';
 import { authorize } from '../middlewares/adminAuth';
 import { UserRole } from '../models/user';
-import { assessmentValidation } from '../middlewares/validation';
+import { uploadGeneral } from '../middlewares/uploadMiddleware';
 
 const assessmentRouter = express.Router();
 
 // ============================================
-// PUBLIC/STUDENT ROUTES
+// STUDENT ROUTES
 // ============================================
 
-// Get all published assessments (students)
-assessmentRouter.get(
-  '/published',
-  protect,
-  authorize(UserRole.STUDENT),
-  getPublishedAssessments
-);
-
-// Get single assessment by ID
-assessmentRouter.get('/:id', protect, getAssessmentById);
+// Get all published assessments
+assessmentRouter.get('/', protect, getPublishedAssessments);
 
 // Get assessments by course
-assessmentRouter.get(
-  '/course/:courseId',
-  protect,
-  getAssessmentsByCourse
-);
+assessmentRouter.get('/courses/:courseId', protect, getAssessmentsByCourse);
 
 // Get assessments by module
-assessmentRouter.get(
-  '/module/:moduleId',
-  protect,
-  getAssessmentsByModule
-);
+assessmentRouter.get('/modules/:moduleId', protect, getAssessmentsByModule);
+
+// Get single assessment
+assessmentRouter.get('/:id', protect, getAssessmentById);
 
 // ============================================
-// ADMIN & INSTRUCTOR ROUTES
+// ADMIN/INSTRUCTOR ROUTES
 // ============================================
 
-// Get all assessments (admin view - includes unpublished)
+// Get all assessments (includes unpublished)
 assessmentRouter.get(
   '/admin/all',
   protect,
@@ -66,10 +53,9 @@ assessmentRouter.get(
 
 // Create assessment
 assessmentRouter.post(
-  '/admin/create',
+  '/admin',
   protect,
-  authorize(UserRole.ADMIN, UserRole.INSTRUCTOR),
-  assessmentValidation.create,
+  authorize(UserRole.ADMIN, UserRole.INSTRUCTOR),uploadGeneral.array('files'),
   createAssessment
 );
 
@@ -77,11 +63,11 @@ assessmentRouter.post(
 assessmentRouter.put(
   '/admin/:id',
   protect,
-  authorize(UserRole.ADMIN, UserRole.INSTRUCTOR),
+  authorize(UserRole.ADMIN, UserRole.INSTRUCTOR), uploadGeneral.array('files'),
   updateAssessment
 );
 
-// Delete assessment (admin only)
+// Delete assessment
 assessmentRouter.delete(
   '/admin/:id',
   protect,
@@ -89,7 +75,7 @@ assessmentRouter.delete(
   deleteAssessment
 );
 
-// Publish/unpublish assessment (admin only)
+// Publish/unpublish assessment
 assessmentRouter.patch(
   '/admin/:id/publish',
   protect,
@@ -97,15 +83,15 @@ assessmentRouter.patch(
   toggleAssessmentPublish
 );
 
-// Reorder assessments (admin only)
+// Reorder assessments
 assessmentRouter.patch(
   '/admin/reorder',
   protect,
-  authorize(UserRole.ADMIN),
+  authorize(UserRole.ADMIN, UserRole.INSTRUCTOR),
   reorderAssessments
 );
 
-// Send assessment reminder (admin & instructor)
+// Send assessment reminder
 assessmentRouter.post(
   '/admin/:assessmentId/reminder',
   protect,

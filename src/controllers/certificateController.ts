@@ -11,6 +11,8 @@ import { NotificationType } from "../models/Notification";
 import { pushNotification } from "../utils/pushNotification";
 import { Enrollment } from "../models/Enrollment";
 import { Submission, SubmissionStatus } from "../models/Submission";
+import path from "path";
+import fs from "fs";
 
 // ==============================
 // ISSUE CERTIFICATE (Course or Program)
@@ -200,3 +202,171 @@ export const getCertificateById = asyncHandler(async (req: AuthRequest, res: Res
 
  return res.status(200).json({ success: true, data: certificate });
 });
+
+
+// ==============================
+// GET CERTIFICATES BY STUDENT (Admin/Instructor)
+// ==============================
+export const getCertificatesByStudent = asyncHandler(
+  async (req: AuthRequest, res: Response) => {
+    const { studentId } = req.params;
+
+    const certificates = await Certificate.find({ studentId })
+      .populate("courseId programId", "title")
+      .populate("issuedBy", "firstName lastName")
+      .sort({ completionDate: -1 });
+
+    res.status(200).json({
+      success: true,
+      count: certificates.length,
+      data: certificates,
+    });
+  }
+);
+
+// ==============================
+// GET CERTIFICATES BY COURSE
+// ==============================
+export const getCertificatesByCourse = asyncHandler(
+  async (req: AuthRequest, res: Response) => {
+    const { courseId } = req.params;
+
+    const certificates = await Certificate.find({ courseId })
+      .populate("studentId", "firstName lastName email")
+      .populate("issuedBy", "firstName lastName")
+      .sort({ completionDate: -1 });
+
+    res.status(200).json({
+      success: true,
+      count: certificates.length,
+      data: certificates,
+    });
+  }
+);
+
+// ==============================
+// GET CERTIFICATES BY PROGRAM
+// ==============================
+export const getCertificatesByProgram = asyncHandler(
+  async (req: AuthRequest, res: Response) => {
+    const { programId } = req.params;
+
+    const certificates = await Certificate.find({ programId })
+      .populate("studentId", "firstName lastName email")
+      .populate("issuedBy", "firstName lastName")
+      .sort({ completionDate: -1 });
+
+    res.status(200).json({
+      success: true,
+      count: certificates.length,
+      data: certificates,
+    });
+  }
+);
+
+// ==============================
+// DOWNLOAD CERTIFICATE
+// ==============================
+export const downloadCertificate = asyncHandler(
+  async (req: AuthRequest, res: Response) => {
+    if (!req.user) {
+      res.status(401).json({ success: false, error: "Unauthorized" });
+      return;
+    }
+
+    const certificate = await Certificate.findById(req.params.id);
+
+    if (!certificate) {
+      res.status(404).json({ success: false, error: "Certificate not found" });
+      return;
+    }
+
+    // Students can only download their own certificates
+    if (
+      req.user.role === "student" &&
+      certificate.studentId.toString() !== req.user._id.toString()
+    ) {
+      res.status(403).json({ success: false, error: "Access denied" });
+      return;
+    }
+
+    // Check if certificate is revoked
+    if (certificate.status === "revoked") {
+      res.status(400).json({
+        success: false,
+        error: "This certificate has been revoked and cannot be downloaded",
+      });
+      return;
+    }
+
+    if (!certificate.pdfUrl) {
+      res.status(404).json({
+        success: false,
+        error: "Certificate PDF not available",
+      });
+      return;
+    }
+
+    // If pdfUrl is a Cloudinary URL, redirect to it
+    if (certificate.pdfUrl.startsWith("http")) {
+      res.redirect(certificate.pdfUrl);
+      return;
+    }
+
+    // If it's a local file path
+    const filePath = path.resolve(certificate.pdfUrl);
+
+    if (!fs.existsSync(filePath)) {
+      res.status(404).json({
+        success: false,
+        error: "Certificate file not found",
+      });
+      return;
+    }
+
+    res.download(filePath, `certificate-${certificate._id}.pdf`, (err) => {
+      if (err) {
+        console.error("Error downloading certificate:", err);
+        res.status(500).json({
+          success: false,
+          error: "Error downloading certificate",
+        });
+      }
+    });
+  }
+);
+
+// ==============================
+// VERIFY CERTIFICATE (Public)
+// ==============================
+export const verifyCertificate = asyncHandler(
+  async (req: Request, res: Response) => {
+    const certificate = await Certificate.findById(req.params.id)
+      .populate("studentId", "firstName lastName")
+      .populate("courseId programId", "title");
+
+    if (!certificate) {
+      res.status(404).json({
+        success: false,
+        error: "Certificate not found",
+      });
+      return;
+    }
+
+    // Return verification info
+    res.status(200).json({
+      success: true,
+      data: {
+        isValid: certificate.status === "issued",
+        status: certificate.status,
+        studentName: certificate.studentName,
+        courseName: certificate.courseName,
+        programName: certificate.programName,
+        completionDate: certificate.completionDate,
+        grade: certificate.grade,
+        finalScore: certificate.finalScore,
+        metadata: certificate.metadata,
+      },
+    });
+  }
+);

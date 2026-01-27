@@ -8,7 +8,10 @@ import {
   toggleLessonPublish,
   startLesson,
   completeLesson,
-  getCourseProgress
+  getCourseProgress,
+  getAllLessonsAdmin,
+  getLessonProgress,
+  lessonStats
 } from '../controllers/lessonController';
 import { protect } from '../middlewares/auth';
 import { adminOnly, instructorAccess } from '../middlewares/adminAuth';
@@ -64,5 +67,10 @@ lessonRouter.post('/:id/complete', completeLesson);
 
 // Get student progress for a course
 lessonRouter.get('/course/:courseId/progress', getCourseProgress);
+
+lessonRouter.get('/admin/all', adminOnly, getAllLessonsAdmin);
+lessonRouter.get('/stats', adminOnly, lessonStats);
+lessonRouter.get('/:lessonId/progress', getLessonProgress);
+
 
 export default lessonRouter;
