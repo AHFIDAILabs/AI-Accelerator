@@ -26,6 +26,8 @@ export interface IQuestion {
 }
 
 export interface IAssessment extends Document {
+  _id: mongoose.Types.ObjectId; // Explicitly add _id for clarity
+  
   programId?: mongoose.Types.ObjectId; 
   courseId: mongoose.Types.ObjectId;
   moduleId?: mongoose.Types.ObjectId;
@@ -79,11 +81,14 @@ const assessmentSchema = new Schema<IAssessment>(
 
     questions: [questionSchema],
 
-    totalPoints: { type: Number, default: 0 }, // remove `required`
+    totalPoints: { type: Number, default: 0 },
     passingScore: { type: Number, required: true, min: 0, max: 100 },
 
     duration: { type: Number, min: 0 },
-    attempts: { type: Number, default: 1, min: 1 },
+    
+    // ✅ FIX: Change default from 1 to 2 to match controller
+    attempts: { type: Number, default: 2, min: 1 }, // Changed from default: 1
+    
     isPublished: { type: Boolean, default: false },
     isRequiredForCompletion: { type: Boolean, default: true },
 

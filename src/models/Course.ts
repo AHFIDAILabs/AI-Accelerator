@@ -3,7 +3,7 @@ import mongoose, { Document, Model, Schema } from 'mongoose';
 export interface ICourse extends Document {
   program: mongoose.Types.ObjectId;
   order: number;
-
+slug: string; // For URL
   title: string;
   description: string;
   estimatedHours: number;
@@ -42,6 +42,12 @@ const courseSchema = new Schema<ICourse>(
   order: {
     type: Number,
     required: true
+  },
+
+  slug: {
+    type: String,
+    trim: true,
+    unique: true
   },
 
   title: {

@@ -1,5 +1,5 @@
 // ============================================
-// src/routes/assessment.routes.ts
+// src/routes/assessment.routes.ts (RECOMMENDED REORDERING)
 // ============================================
 
 import express from 'express';
@@ -24,23 +24,7 @@ import { uploadGeneral } from '../middlewares/uploadMiddleware';
 const assessmentRouter = express.Router();
 
 // ============================================
-// STUDENT ROUTES
-// ============================================
-
-// Get all published assessments
-assessmentRouter.get('/', protect, getPublishedAssessments);
-
-// Get assessments by course
-assessmentRouter.get('/courses/:courseId', protect, getAssessmentsByCourse);
-
-// Get assessments by module
-assessmentRouter.get('/modules/:moduleId', protect, getAssessmentsByModule);
-
-// Get single assessment
-assessmentRouter.get('/:id', protect, getAssessmentById);
-
-// ============================================
-// ADMIN/INSTRUCTOR ROUTES
+// ADMIN/INSTRUCTOR ROUTES (Most specific first)
 // ============================================
 
 // Get all assessments (includes unpublished)
@@ -55,15 +39,41 @@ assessmentRouter.get(
 assessmentRouter.post(
   '/admin',
   protect,
-  authorize(UserRole.ADMIN, UserRole.INSTRUCTOR),uploadGeneral.array('files'),
+  authorize(UserRole.ADMIN, UserRole.INSTRUCTOR),
+  uploadGeneral.array('files'),
   createAssessment
+);
+
+// Reorder assessments (before /:id to avoid conflict)
+assessmentRouter.patch(
+  '/admin/reorder',
+  protect,
+  authorize(UserRole.ADMIN, UserRole.INSTRUCTOR),
+  reorderAssessments
+);
+
+// Send assessment reminder (before /:id to avoid conflict)
+assessmentRouter.post(
+  '/admin/:assessmentId/reminder',
+  protect,
+  authorize(UserRole.ADMIN, UserRole.INSTRUCTOR),
+  sendAssessmentReminder
+);
+
+// Publish/unpublish assessment
+assessmentRouter.patch(
+  '/admin/:id/publish',
+  protect,
+  authorize(UserRole.ADMIN),
+  toggleAssessmentPublish
 );
 
 // Update assessment
 assessmentRouter.put(
   '/admin/:id',
   protect,
-  authorize(UserRole.ADMIN, UserRole.INSTRUCTOR), uploadGeneral.array('files'),
+  authorize(UserRole.ADMIN, UserRole.INSTRUCTOR),
+  uploadGeneral.array('files'),
   updateAssessment
 );
 
@@ -75,28 +85,53 @@ assessmentRouter.delete(
   deleteAssessment
 );
 
-// Publish/unpublish assessment
-assessmentRouter.patch(
-  '/admin/:id/publish',
-  protect,
-  authorize(UserRole.ADMIN),
-  toggleAssessmentPublish
-);
+// ============================================
+// STUDENT ROUTES (Specific paths before dynamic params)
+// ============================================
 
-// Reorder assessments
-assessmentRouter.patch(
-  '/admin/reorder',
-  protect,
-  authorize(UserRole.ADMIN, UserRole.INSTRUCTOR),
-  reorderAssessments
-);
+// Get assessments by course (before /:id)
+assessmentRouter.get('/courses/:courseId', protect, getAssessmentsByCourse);
 
-// Send assessment reminder
-assessmentRouter.post(
-  '/admin/:assessmentId/reminder',
-  protect,
-  authorize(UserRole.ADMIN, UserRole.INSTRUCTOR),
-  sendAssessmentReminder
-);
+// Get assessments by module (before /:id)
+assessmentRouter.get('/modules/:moduleId', protect, getAssessmentsByModule);
+
+// Get all published assessments (root path)
+assessmentRouter.get('/', protect, getPublishedAssessments);
+
+// Get single assessment (LAST - most generic)
+assessmentRouter.get('/:id', protect, getAssessmentById);
 
 export default assessmentRouter;
+
+/* 
+  ============================================
+  ROUTE ORDER EXPLANATION
+  ============================================
+  
+  Express matches routes in the order they're defined.
+  Routes should go from MOST SPECIFIC to LEAST SPECIFIC:
+  
+  1. /admin/all            ← Most specific
+  2. /admin/reorder        ← Specific
+  3. /admin/:id/reminder   ← Specific with param
+  4. /admin/:id/publish    ← Specific with param
+  5. /admin/:id            ← Dynamic but namespaced
+  6. /courses/:courseId    ← Specific path
+  7. /modules/:moduleId    ← Specific path
+  8. /                     ← Root path
+  9. /:id                  ← LEAST specific (catch-all)
+  
+  ============================================
+  WHY THIS MATTERS
+  ============================================
+  
+  If you put /:id before /courses/:courseId:
+  - Request to /assessments/courses/123 would match /:id
+  - The id would be "courses" (wrong!)
+  
+  If you put /admin/:id before /admin/all:
+  - Request to /assessments/admin/all would match /admin/:id
+  - The id would be "all" (wrong!)
+  
+  ============================================
+*/

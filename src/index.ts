@@ -44,17 +44,19 @@ const app: Application = express();
 // ============================================
 // MIDDLEWARE CONFIGURATION
 // ============================================
-app.use(helmet({
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
-      scriptSrc: ["'self'"],
-      imgSrc: ["'self'", "data:", "https:"],
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        scriptSrc: ["'self'"],
+        imgSrc: ["'self'", "data:", "https:"],
+      },
     },
-  },
-  crossOriginEmbedderPolicy: false,
-}));
+    crossOriginEmbedderPolicy: false,
+  })
+);
 
 const corsOptions = {
   origin: process.env.CLIENT_URL || 'http://localhost:3000',
@@ -71,14 +73,17 @@ app.use(cookieParser());
 if (process.env.NODE_ENV === 'development') app.use(morgan('dev'));
 else app.use(morgan('combined'));
 
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100,
+// ============================================
+// RATE LIMITERS (In-memory, no Redis)
+// ============================================
+const generalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 50,
   message: 'Too many requests from this IP, try again later.',
   standardHeaders: true,
   legacyHeaders: false,
 });
-app.use('/api/', limiter);
+app.use('/api/', generalLimiter);
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -95,13 +100,20 @@ app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 // ============================================
 const connectDB = async (): Promise<void> => {
   try {
-    const mongoURI = process.env.MONGODB_URI || 'mongodb://localhost:27017/ai-accelerator';
+    const mongoURI =
+      process.env.MONGODB_URI || 'mongodb://localhost:27017/ai-accelerator';
     await mongoose.connect(mongoURI);
     console.log('✅ MongoDB Connected Successfully');
 
-    mongoose.connection.on('error', (err) => console.error('❌ MongoDB error:', err));
-    mongoose.connection.on('disconnected', () => console.warn('⚠️ MongoDB disconnected'));
-    mongoose.connection.on('reconnected', () => console.log('🔄 MongoDB reconnected'));
+    mongoose.connection.on('error', (err) =>
+      console.error('❌ MongoDB error:', err)
+    );
+    mongoose.connection.on('disconnected', () =>
+      console.warn('⚠️ MongoDB disconnected')
+    );
+    mongoose.connection.on('reconnected', () =>
+      console.log('🔄 MongoDB reconnected')
+    );
   } catch (error) {
     console.error('❌ MongoDB connection failed:', error);
     process.exit(1);
@@ -154,7 +166,7 @@ app.get('/api', (_req: Request, res: Response) => {
       certificates: '/api/v1/certificates',
       notifications: '/api/v1/notifications',
       progress: '/api/v1/progress',
-      program: '/api/v1/program',
+      program: '/api/v1/programs',
       submission: '/api/v1/submission',
     },
   });
@@ -172,8 +184,8 @@ app.use('/api/v1/enrollments', enrollmentRouter);
 app.use('/api/v1/certificates', certificateRoutes);
 app.use('/api/v1/notifications', notificationRouter);
 app.use('/api/v1/progress', progressRouter);
-app.use("/api/v1/program", programRouter);
-app.use("/api/v1/submission", submissionRouter);
+app.use('/api/v1/programs', programRouter);
+app.use('/api/v1/submission', submissionRouter);
 
 // Error Handling
 app.use(notFound);
@@ -182,25 +194,41 @@ app.use(errorHandler);
 // ============================================
 // GRACEFUL SHUTDOWN
 // ============================================
+let isShuttingDown = false;
+
 const gracefulShutdown = async (signal: string) => {
-  console.log(`\n${signal} received. Shutting down gracefully...`);
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+
+  console.log(`\n ${signal} received. Shutting down gracefully...`);
+
   try {
+    // Stop accepting new HTTP connections
+    server.close(() => {
+      console.log('✅ HTTP server closed');
+    });
+
+    // Close Socket.IO
+    io.close(() => {
+      console.log('✅ Socket.IO server closed');
+    });
+
+    // Close MongoDB
     await mongoose.connection.close();
     console.log('✅ MongoDB connection closed');
 
-    server.close(() => {
-      console.log('✅ HTTP server closed');
-      process.exit(0);
-    });
-
-    setTimeout(() => {
-      console.error('⚠️ Forced shutdown after timeout');
-      process.exit(1);
-    }, 10000);
+    console.log('🎉 Graceful shutdown complete');
+    process.exit(0);
   } catch (error) {
     console.error('❌ Error during shutdown:', error);
     process.exit(1);
   }
+
+  // Force shutdown safety net
+  setTimeout(() => {
+    console.error('⚠️ Forced shutdown after timeout');
+    process.exit(1);
+  }, 10000);
 };
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
@@ -213,7 +241,6 @@ process.on('uncaughtException', (error: Error) => {
 process.on('unhandledRejection', (reason: any) => {
   console.error('❌ UNHANDLED REJECTION! Shutting down...');
   console.error(reason);
-  gracefulShutdown('UNHANDLED_REJECTION');
 });
 
 // ============================================
@@ -221,7 +248,9 @@ process.on('unhandledRejection', (reason: any) => {
 // ============================================
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
-  console.log(`🚀 Server running in ${process.env.NODE_ENV || 'development'} mode`);
+  console.log(
+    `🚀 Server running in ${process.env.NODE_ENV || 'development'} mode`
+  );
   console.log(`🚀 Listening on port ${PORT}`);
 });
 

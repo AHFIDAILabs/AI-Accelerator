@@ -96,28 +96,117 @@ export const getPrograms = asyncHandler(async (req: AuthRequest, res: Response) 
     };
   }
 
-  const programs = await Program.find(filter).populate("instructors", "firstName lastName");
+  const programs = await Program.find(filter)
+    .populate("instructors", "firstName lastName avatar")
+    .select('-__v');
+
   res.json({ success: true, data: programs });
 });
 
 
 // =============================
-// GET SINGLE PROGRAM (FULL)
+// GET SINGLE PROGRAM (BASIC INFO)
 // =============================
 export const getProgram = asyncHandler(async (req: Request, res: Response) => {
   const program = await Program.findById(req.params.id)
     .populate("instructors", "firstName lastName avatar")
     .populate({
       path: "courses",
-      populate: {
-        path: "modules",
-        populate: { path: "lessons" }
-      }
+      select: "title description slug level totalDuration"
     });
 
   if (!program) return res.status(404).json({ success: false, error: "Program not found" });
 
  return res.json({ success: true, data: program });
+});
+
+
+// =============================
+// GET SINGLE PROGRAM WITH FULL DETAILS
+// =============================
+export const getProgramWithDetails = asyncHandler(async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ 
+        success: false, 
+        error: "Invalid program ID format" 
+      });
+    }
+
+    // ✅ FIXED: Only populate what exists in Course schema
+    const program = await Program.findById(id)
+      .populate("instructors", "firstName lastName avatar email")
+      .populate({
+        path: "courses",
+        select: "title description slug level totalDuration thumbnail instructor isPublished"
+      })
+      .lean();
+
+    if (!program) {
+      return res.status(404).json({ 
+        success: false, 
+        error: "Program not found" 
+      });
+    }
+
+    return res.json({ 
+      success: true, 
+      data: program 
+    });
+
+  } catch (error: any) {
+    console.error('Error in getProgramWithDetails:', error);
+    return res.status(500).json({ 
+      success: false, 
+      error: error.message || "Failed to fetch program details" 
+    });
+  }
+});
+
+
+// =============================
+// GET PROGRAM BY SLUG (FIXED)
+// =============================
+export const getProgramBySlug = asyncHandler(async (req: Request, res: Response) => {
+  try {
+    const { slug } = req.params;
+
+    console.log('📍 Fetching program by slug:', slug);
+
+    // ✅ FIXED: Simplified population without nested modules/lessons
+    const program = await Program.findOne({ slug })
+      .populate('instructors', 'firstName lastName avatar email')
+      .populate({
+        path: 'courses',
+        select: 'title description slug level totalDuration thumbnail instructor isPublished',
+        // Don't populate modules - it causes the StrictPopulateError
+      })
+      .lean();
+
+    if (!program) {
+      console.log('❌ Program not found with slug:', slug);
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Program not found' 
+      });
+    }
+
+    console.log('✅ Program found:', program.title);
+
+    return res.json({ 
+      success: true, 
+      data: program 
+    });
+
+  } catch (error: any) {
+    console.error('❌ Error in getProgramBySlug:', error);
+    return res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Failed to fetch program' 
+    });
+  }
 });
 
 
@@ -149,8 +238,6 @@ export const addCourseToProgram = asyncHandler(async (req: AuthRequest, res: Res
 // REMOVE COURSE FROM PROGRAM
 // =============================
 export const removeCourseFromProgram = asyncHandler(async (req: AuthRequest, res: Response) => {
-
-    
   const { programId, courseId } = req.body;
 
   const program = await Program.findById(programId);
@@ -180,7 +267,6 @@ export const toggleProgramPublish = asyncHandler(async (req: AuthRequest, res: R
 });
 
 
-
 // =============================
 // DELETE PROGRAM
 // =============================
@@ -196,7 +282,11 @@ export const deleteProgram = asyncHandler(async (req: AuthRequest, res: Response
 });
 
 
+// =============================
+// HELPER FUNCTION
+// =============================
 const canEditProgram = (user: any, program: any) => {
+  if (!user) return false;
   if (user.role === UserRole.ADMIN) return true;
   if (user.role === UserRole.INSTRUCTOR) {
     return (

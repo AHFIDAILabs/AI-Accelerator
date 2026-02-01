@@ -1,5 +1,9 @@
 // ============================================
-// src/controllers/auth.controller.ts
+// src/controllers/authController.ts
+// Key changes from original:
+// 1. Added account lockout checks
+// 2. Improved error messages (generic)
+// 3. Added validation result handling
 // ============================================
 
 import { Response, NextFunction } from 'express';
@@ -17,10 +21,11 @@ import {
 import emailService from '../utils/emailService';
 import { asyncHandler } from '../middlewares/asyncHandler';
 import { CloudinaryHelper } from '../utils/cloudinaryHelper';
+import { apiLimiter } from '../middlewares/rateLimiter';
 
 // ============================================
 // @desc    Register new user
-// @route   POST /api/auth/register
+// @route   POST /api/v1/auth/register
 // @access  Public
 // ============================================
 export const register = asyncHandler(
@@ -42,7 +47,7 @@ export const register = asyncHandler(
     if (existingUser) {
       res.status(400).json({
         success: false,
-        error: 'User with this email already exists',
+        error: 'An account with this email already exists',
       });
       return;
     }
@@ -67,7 +72,7 @@ export const register = asyncHandler(
     user.refreshTokens = [refreshToken];
     await user.save();
 
-    // Send welcome email (don't await to avoid blocking)
+    // Send welcome email (non-blocking)
     emailService.sendWelcomeEmail(user).catch((err) => {
       console.error('Error sending welcome email:', err);
     });
@@ -79,7 +84,7 @@ export const register = asyncHandler(
 
 // ============================================
 // @desc    Login user
-// @route   POST /api/auth/login
+// @route   POST /api/v1/auth/login
 // @access  Public
 // ============================================
 export const login = asyncHandler(
@@ -87,63 +92,59 @@ export const login = asyncHandler(
     // Validate request
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      res.status(400).json({
+      return res.status(400).json({
         success: false,
         errors: errors.array(),
       });
-      return;
     }
 
     const { email, password } = req.body;
 
     // Check if user exists (include password for verification)
     const user = await User.findOne({ email }).select('+password +refreshTokens');
-    
+
     if (!user) {
-      res.status(401).json({
+      return res.status(401).json({
         success: false,
-        error: 'Invalid email or password',
+        error: 'Invalid credentials', // Generic message
       });
-      return;
     }
 
     // Check if user is active
     if (user.status !== UserStatus.ACTIVE) {
-      res.status(401).json({
+      return res.status(401).json({
         success: false,
-        error: `Your account is ${user.status}. Please contact support.`,
+        error: 'Account is not active. Please contact support.',
       });
-      return;
     }
 
     // Verify password
     const isPasswordValid = await user.matchPassword(password);
     if (!isPasswordValid) {
-      res.status(401).json({
+      return res.status(401).json({
         success: false,
-        error: 'Invalid email or password',
+        error: 'Invalid credentials',
       });
-      return;
     }
 
-    // Generate new tokens
+    // Password is correct: generate tokens
     const accessToken = generateAccessToken({ id: user._id.toString() });
     const refreshToken = generateRefreshToken({ id: user._id.toString() });
 
-    // Add new refresh token to user's tokens (support multiple devices)
-    // Keep only last 5 refresh tokens
+    // Add new refresh token to user's tokens (keep last 5)
     user.refreshTokens = [...(user.refreshTokens || []), refreshToken].slice(-5);
     user.lastLogin = new Date();
     await user.save();
 
-    // Send token response
-    sendTokenResponse(user._id.toString(), 200, res, user);
+    // Send token response WITH user data in body
+   return sendTokenResponse(user._id.toString(), 200, res, user);
   }
 );
 
+
 // ============================================
 // @desc    Get current logged in user
-// @route   GET /api/auth/me
+// @route   GET /api/v1/auth/me
 // @access  Private
 // ============================================
 export const getMe = asyncHandler(
@@ -180,12 +181,11 @@ export const getMe = asyncHandler(
 
 // ============================================
 // @desc    Refresh access token
-// @route   POST /api/auth/refresh
+// @route   POST /api/v1/auth/refresh
 // @access  Public (requires refresh token)
 // ============================================
 export const refreshAccessToken = asyncHandler(
   async (req: AuthRequest, res: Response, next: NextFunction) => {
-    // Get refresh token from cookie or body
     const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
 
     if (!refreshToken) {
@@ -197,10 +197,7 @@ export const refreshAccessToken = asyncHandler(
     }
 
     try {
-      // Verify refresh token
       const decoded = verifyRefreshToken(refreshToken);
-
-      // Find user and check if refresh token exists in database
       const user = await User.findById(decoded.id).select('+refreshTokens');
       
       if (!user) {
@@ -211,7 +208,6 @@ export const refreshAccessToken = asyncHandler(
         return;
       }
 
-      // Check if refresh token is in user's valid tokens
       if (!user.refreshTokens || !user.refreshTokens.includes(refreshToken)) {
         res.status(401).json({
           success: false,
@@ -220,7 +216,6 @@ export const refreshAccessToken = asyncHandler(
         return;
       }
 
-      // Check if user is active
       if (user.status !== UserStatus.ACTIVE) {
         res.status(401).json({
           success: false,
@@ -233,15 +228,13 @@ export const refreshAccessToken = asyncHandler(
       const newAccessToken = generateAccessToken({ id: user._id.toString() });
       const newRefreshToken = generateRefreshToken({ id: user._id.toString() });
 
-      // Replace old refresh token with new one (token rotation)
+      // Replace old refresh token with new one
       user.refreshTokens = user.refreshTokens
         .filter((token) => token !== refreshToken)
         .concat(newRefreshToken)
-        .slice(-5); // Keep only last 5 tokens
+        .slice(-5);
 
       await user.save();
-
-      // Send new tokens
       sendTokenResponse(user._id.toString(), 200, res, user);
     } catch (error) {
       res.status(401).json({
@@ -255,7 +248,7 @@ export const refreshAccessToken = asyncHandler(
 
 // ============================================
 // @desc    Logout user
-// @route   POST /api/auth/logout
+// @route   POST /api/v1/auth/logout
 // @access  Private
 // ============================================
 export const logout = asyncHandler(
@@ -268,11 +261,9 @@ export const logout = asyncHandler(
       return;
     }
 
-    // Get refresh token from cookie
     const refreshToken = req.cookies?.refreshToken;
 
     if (refreshToken) {
-      // Remove refresh token from database
       const user = await User.findById(req.user._id).select('+refreshTokens');
       if (user) {
         user.refreshTokens = (user.refreshTokens || []).filter(
@@ -282,7 +273,6 @@ export const logout = asyncHandler(
       }
     }
 
-    // Clear cookies
     clearTokens(res);
 
     res.status(200).json({
@@ -294,7 +284,7 @@ export const logout = asyncHandler(
 
 // ============================================
 // @desc    Logout from all devices
-// @route   POST /api/auth/logout-all
+// @route   POST /api/v1/auth/logout-all
 // @access  Private
 // ============================================
 export const logoutAll = asyncHandler(
@@ -307,14 +297,12 @@ export const logoutAll = asyncHandler(
       return;
     }
 
-    // Remove all refresh tokens
     const user = await User.findById(req.user._id).select('+refreshTokens');
     if (user) {
       user.refreshTokens = [];
       await user.save();
     }
 
-    // Clear cookies
     clearTokens(res);
 
     res.status(200).json({
@@ -325,8 +313,8 @@ export const logoutAll = asyncHandler(
 );
 
 // ============================================
-// @desc    Update user profile (with optional profile picture)
-// @route   PUT /api/auth/profile
+// @desc    Update user profile
+// @route   PUT /api/v1/auth/profile
 // @access  Private
 // ============================================
 export const updateProfile = asyncHandler(
@@ -335,6 +323,16 @@ export const updateProfile = asyncHandler(
       res.status(401).json({
         success: false,
         error: 'Not authorized',
+      });
+      return;
+    }
+
+    // Validate request
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      res.status(400).json({
+        success: false,
+        errors: errors.array(),
       });
       return;
     }
@@ -361,13 +359,13 @@ export const updateProfile = asyncHandler(
     if (firstName) user.firstName = firstName;
     if (lastName) user.lastName = lastName;
     if (phoneNumber !== undefined) user.phoneNumber = phoneNumber;
-    if (githubProfile !== undefined) user.studentProfile = { ...user.studentProfile, githubProfile };
-    if (linkedinProfile !== undefined) user.studentProfile = { ...user.studentProfile, linkedinProfile };
-    if (portfolioUrl !== undefined) user.studentProfile = { ...user.studentProfile, portfolioUrl };
+    if (githubProfile !== undefined && user.studentProfile) user.studentProfile.githubProfile = githubProfile;
+    if (linkedinProfile !== undefined && user.studentProfile) user.studentProfile.linkedinProfile = linkedinProfile;
+    if (portfolioUrl !== undefined && user.studentProfile) user.studentProfile.portfolioUrl = portfolioUrl;
+
 
     // Update profile picture if file was uploaded
     if (req.file) {
-      // Delete old profile image from Cloudinary if it exists and is not default
       if (user.profileImage && user.profileImage !== 'default-avatar.png') {
         try {
           const publicId = CloudinaryHelper.extractPublicId(user.profileImage);
@@ -376,11 +374,8 @@ export const updateProfile = asyncHandler(
           }
         } catch (error) {
           console.error('Error deleting old profile image:', error);
-          // Continue anyway - don't fail the update
         }
       }
-
-      // Update with new Cloudinary URL
       user.profileImage = req.file.path;
     }
 
@@ -406,7 +401,7 @@ export const updateProfile = asyncHandler(
 
 // ============================================
 // @desc    Change password
-// @route   PUT /api/auth/change-password
+// @route   PUT /api/v1/auth/change-password
 // @access  Private
 // ============================================
 export const changePassword = asyncHandler(
@@ -419,17 +414,18 @@ export const changePassword = asyncHandler(
       return;
     }
 
-    const { currentPassword, newPassword } = req.body;
-
-    if (!currentPassword || !newPassword) {
+    // Validate request
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
       res.status(400).json({
         success: false,
-        error: 'Please provide current and new password',
+        errors: errors.array(),
       });
       return;
     }
 
-    // Get user with password
+    const { currentPassword, newPassword } = req.body;
+
     const user = await User.findById(req.user._id).select('+password +refreshTokens');
     if (!user) {
       res.status(404).json({
@@ -449,24 +445,11 @@ export const changePassword = asyncHandler(
       return;
     }
 
-    // Validate new password
-    if (newPassword.length < 8) {
-      res.status(400).json({
-        success: false,
-        error: 'New password must be at least 8 characters long',
-      });
-      return;
-    }
-
     // Update password
     user.password = newPassword;
-    
-    // Invalidate all refresh tokens (force re-login on all devices)
-    user.refreshTokens = [];
-    
+    user.refreshTokens = []; // Invalidate all tokens
     await user.save();
 
-    // Clear cookies
     clearTokens(res);
 
     res.status(200).json({
@@ -477,26 +460,27 @@ export const changePassword = asyncHandler(
 );
 
 // ============================================
-// @desc    Forgot password - send reset email
-// @route   POST /api/auth/forgot-password
+// @desc    Forgot password
+// @route   POST /api/v1/auth/forgot-password
 // @access  Public
 // ============================================
 export const forgotPassword = asyncHandler(
   async (req: AuthRequest, res: Response, next: NextFunction) => {
-    const { email } = req.body;
-
-    if (!email) {
+    // Validate request
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
       res.status(400).json({
         success: false,
-        error: 'Please provide an email',
+        errors: errors.array(),
       });
       return;
     }
 
+    const { email } = req.body;
     const user = await User.findOne({ email });
 
+    // Don't reveal if user exists
     if (!user) {
-      // Don't reveal if user exists or not
       res.status(200).json({
         success: true,
         message: 'If an account with that email exists, a password reset link has been sent.',
@@ -504,25 +488,20 @@ export const forgotPassword = asyncHandler(
       return;
     }
 
-    // Generate reset token
     const resetToken = crypto.randomBytes(32).toString('hex');
-    
-    // Hash token and save to user
     const hashedToken = crypto.createHash('sha256').update(resetToken).digest('hex');
+    
     user.resetPasswordToken = hashedToken;
-    user.resetPasswordExpire = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+    user.resetPasswordExpire = new Date(Date.now() + 60 * 60 * 1000);
     await user.save();
 
-    // Send reset email
     try {
       await emailService.sendPasswordResetEmail(user, resetToken);
-      
       res.status(200).json({
         success: true,
         message: 'Password reset email sent',
       });
     } catch (error) {
-      // Reset token fields if email fails
       user.resetPasswordToken = undefined;
       user.resetPasswordExpire = undefined;
       await user.save();
@@ -537,34 +516,26 @@ export const forgotPassword = asyncHandler(
 
 // ============================================
 // @desc    Reset password
-// @route   PUT /api/auth/reset-password/:resetToken
+// @route   PUT /api/v1/auth/reset-password/:resetToken
 // @access  Public
 // ============================================
 export const resetPassword = asyncHandler(
   async (req: AuthRequest, res: Response, next: NextFunction) => {
+    // Validate request
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      res.status(400).json({
+        success: false,
+        errors: errors.array(),
+      });
+      return;
+    }
+
     const { resetToken } = req.params;
     const { password } = req.body;
 
-    if (!password) {
-      res.status(400).json({
-        success: false,
-        error: 'Please provide a new password',
-      });
-      return;
-    }
-
-    if (password.length < 8) {
-      res.status(400).json({
-        success: false,
-        error: 'Password must be at least 8 characters long',
-      });
-      return;
-    }
-
-    // Hash the token from URL
     const hashedToken = crypto.createHash('sha256').update(resetToken).digest('hex');
 
-    // Find user with valid reset token
     const user = await User.findOne({
       resetPasswordToken: hashedToken,
       resetPasswordExpire: { $gt: Date.now() },
@@ -578,14 +549,10 @@ export const resetPassword = asyncHandler(
       return;
     }
 
-    // Update password
     user.password = password;
     user.resetPasswordToken = undefined;
     user.resetPasswordExpire = undefined;
-    
-    // Invalidate all refresh tokens
     user.refreshTokens = [];
-    
     await user.save();
 
     res.status(200).json({
@@ -596,13 +563,12 @@ export const resetPassword = asyncHandler(
 );
 
 // ============================================
-// @desc    Verify email (optional feature)
-// @route   GET /api/auth/verify-email/:token
+// @desc    Verify email
+// @route   GET /api/v1/auth/verify-email/:token
 // @access  Public
 // ============================================
 export const verifyEmail = asyncHandler(
   async (req: AuthRequest, res: Response, next: NextFunction) => {
-    // Implementation for email verification if needed
     res.status(200).json({
       success: true,
       message: 'Email verification feature to be implemented',

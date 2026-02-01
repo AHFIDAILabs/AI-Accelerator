@@ -4,6 +4,8 @@ import {
   updateProgram,
   getPrograms,
   getProgram,
+  getProgramWithDetails,
+  getProgramBySlug,
   addCourseToProgram,
   removeCourseFromProgram,
   toggleProgramPublish,
@@ -15,18 +17,31 @@ import { UserRole } from "../models/user";
 
 const programRouter = Router();
 
-// 🔹 All routes that modify programs require authentication
+// =============================
+// PUBLIC ROUTES (No Authentication Required)
+// =============================
+
+// Get all published programs
+programRouter.get("/", getPrograms);
+
+// ⚠️ CRITICAL: Specific routes MUST come BEFORE generic /:id route
+// Otherwise Express matches /:id first and treats "slug" or "details" as an ID
+
+// Get program by slug - MUST BE BEFORE /:id
+programRouter.get("/slug/:slug", getProgramBySlug);
+
+// Get program with full details (courses, modules, lessons) - MUST BE BEFORE /:id
+programRouter.get("/details/:id", getProgramWithDetails);
+
+// Get single program basic info - MUST BE LAST
+programRouter.get("/:id", getProgram);
+
+// =============================
+// AUTHENTICATED ROUTES
+// =============================
+
+// Apply authentication to all routes below
 programRouter.use(protect);
-
-// =============================
-// PUBLIC / AUTHENTICATED PROGRAM ROUTES
-// =============================
-programRouter.get("/", getPrograms);           // Authenticated users see programs according to role
-programRouter.get("/:id", getProgram);         // Get single program details
-
-// =============================
-// PROGRAM MANAGEMENT ROUTES
-// =============================
 
 // Only Admins and Instructors can create programs
 programRouter.post("/", authorize(UserRole.ADMIN, UserRole.INSTRUCTOR), createProgram);

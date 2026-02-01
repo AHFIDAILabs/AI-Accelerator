@@ -19,24 +19,92 @@ import {
 import { protect } from '../middlewares/auth';
 import { userValidation } from '../middlewares/validation';
 import { uploadProfilePicture } from '../middlewares/uploadMiddleware';
+import { apiLimiter,
+  authLimiter,
+  passwordResetLimiter,
+  emailVerificationLimiter,
+  uploadLimiter,
+  quizLimiter, } from '../middlewares/rateLimiter';
 
 const authRouter = express.Router();
 
-// Public routes
-authRouter.post('/register', userValidation.register, register);
-authRouter.post('/login', userValidation.login, login);
-authRouter.post('/refresh', refreshAccessToken);
-authRouter.post('/forgot-password', forgotPassword);
-authRouter.put('/reset-password/:resetToken', resetPassword);
-authRouter.get('/verify-email/:token', verifyEmail);
+// ============================================
+// PUBLIC ROUTES (with rate limiting)
+// ============================================
 
-// Protected routes (require authentication)
-authRouter.use(protect); // All routes below this are protected
+// Registration - 5 attempts per 15 min
+authRouter.post(
+  '/register',
+ authLimiter,
+  userValidation.register,
+  register
+);
 
+// Login - 5 attempts per 15 min
+authRouter.post(
+  '/login',
+authLimiter,
+  userValidation.login,
+  login
+);
+
+// Token refresh - moderate limiting
+authRouter.post(
+  '/refresh',
+apiLimiter,
+  refreshAccessToken
+);
+
+// Password reset request - 3 per hour
+authRouter.post(
+  '/forgot-password',
+  userValidation.forgotPassword,
+  forgotPassword
+);
+
+// Password reset completion - 3 per hour
+authRouter.put(
+  '/reset-password/:resetToken',
+ passwordResetLimiter,
+  userValidation.resetPassword,
+  resetPassword
+);
+
+// Email verification - 5 per hour
+authRouter.get(
+  '/verify-email/:token',
+ emailVerificationLimiter,
+  verifyEmail
+);
+
+// ============================================
+// PROTECTED ROUTES (require authentication)
+// ============================================
+authRouter.use(protect); // All routes below are protected
+
+// Get current user
 authRouter.get('/me', getMe);
+
+// Logout
 authRouter.post('/logout', logout);
+
+// Logout from all devices
 authRouter.post('/logout-all', logoutAll);
-authRouter.put('/profile', uploadProfilePicture, updateProfile);
-authRouter.put('/change-password', changePassword);
+
+// Update profile (with file upload)
+authRouter.put(
+  '/profile',
+apiLimiter,
+  uploadProfilePicture,
+  userValidation.updateProfile,
+  updateProfile
+);
+
+// Change password
+authRouter.put(
+  '/change-password',
+  userValidation.changePassword,
+  changePassword
+);
 
 export default authRouter;

@@ -1,5 +1,5 @@
 // ============================================
-// src/controllers/course.controller.ts
+// src/controllers/course.controller.ts (UPDATED)
 // ============================================
 
 import { Response } from 'express';
@@ -60,14 +60,23 @@ export const getAllCourses = asyncHandler(
   }
 );
 
-// @desc    Get single course by ID (public)
+// @desc    Get single course by ID or SLUG (public)
 // @route   GET /api/courses/:id
 // @access  Public
 export const getCourseById = asyncHandler(
   async (req: AuthRequest, res: Response) => {
-    const course = await Course.findById(req.params.id)
+    const identifier = req.params.id;
+    
+    // Try to find by slug first, then by ID
+    let course = await Course.findOne({ slug: identifier })
       .populate('createdBy', 'firstName lastName email')
       .populate('program', 'title description slug');
+    
+    if (!course) {
+      course = await Course.findById(identifier)
+        .populate('createdBy', 'firstName lastName email')
+        .populate('program', 'title description slug');
+    }
 
     if (!course) {
       res.status(404).json({
@@ -120,6 +129,7 @@ export const getCourseById = asyncHandler(
 // @desc    Get all courses (admin - includes unpublished)
 // @route   GET /api/courses/admin/all
 // @access  Admin & Instructor
+
 export const getAllCoursesAdmin = asyncHandler(
   async (req: AuthRequest, res: Response) => {
     const { isPublished, search, page = '1', limit = '10', programId } = req.query;
@@ -183,6 +193,7 @@ export const createCourse = asyncHandler(
       program,
       order,
       title,
+      slug,
       description,
       estimatedHours,
       objectives,
@@ -191,10 +202,20 @@ export const createCourse = asyncHandler(
       completionCriteria,
     } = req.body;
 
-    if (!program || !title || !description || !targetAudience) {
+    if (!program || !title || !description || !targetAudience || !slug) {
       res.status(400).json({
         success: false,
-        error: 'Please provide program, title, description, and target audience',
+        error: 'Please provide program, title, description, target audience, and slug',
+      });
+      return;
+    }
+
+    // Check if slug already exists
+    const existingCourse = await Course.findOne({ slug });
+    if (existingCourse) {
+      res.status(400).json({
+        success: false,
+        error: 'A course with this slug already exists',
       });
       return;
     }
@@ -221,6 +242,7 @@ export const createCourse = asyncHandler(
       program,
       order: order || 1,
       title,
+      slug,
       description,
       estimatedHours,
       objectives: objectives || [],
@@ -288,6 +310,7 @@ export const updateCourse = asyncHandler(
     const {
       order,
       title,
+      slug,
       description,
       estimatedHours,
       objectives,
@@ -297,8 +320,21 @@ export const updateCourse = asyncHandler(
       isPublished,
     } = req.body;
 
+    // Check if slug is being changed and if new slug already exists
+    if (slug && slug !== course.slug) {
+      const existingCourse = await Course.findOne({ slug });
+      if (existingCourse) {
+        res.status(400).json({
+          success: false,
+          error: 'A course with this slug already exists',
+        });
+        return;
+      }
+    }
+
     if (order !== undefined) course.order = order;
     if (title) course.title = title;
+    if (slug) course.slug = slug;
     if (description) course.description = description;
     if (estimatedHours !== undefined) course.estimatedHours = estimatedHours;
     if (objectives) course.objectives = objectives;
@@ -442,9 +478,6 @@ export const rejectCourse = asyncHandler(async (req: AuthRequest, res: Response)
   });
 });
 
-// @desc    Delete course
-// @route   DELETE /api/courses/:id
-// @access  Admin only
 export const deleteCourse = asyncHandler(
   async (req: AuthRequest, res: Response) => {
     const course = await Course.findById(req.params.id);
@@ -504,9 +537,6 @@ export const deleteCourse = asyncHandler(
   }
 );
 
-// @desc    Publish/Unpublish course
-// @route   PATCH /api/courses/:id/publish
-// @access  Admin only
 export const toggleCoursePublish = asyncHandler(
   async (req: AuthRequest, res: Response) => {
     const course = await Course.findById(req.params.id);
@@ -563,13 +593,6 @@ export const toggleCoursePublish = asyncHandler(
   }
 );
 
-// ============================================
-// COURSE CONTENT OVERVIEW
-// ============================================
-
-// @desc    Get course content structure
-// @route   GET /api/courses/:id/content
-// @access  Admin & Instructor
 export const getCourseContent = asyncHandler(
   async (req: AuthRequest, res: Response) => {
     const course = await Course.findById(req.params.id).populate('program', 'title');
@@ -621,13 +644,6 @@ export const getCourseContent = asyncHandler(
   }
 );
 
-// ============================================
-// COURSE ENROLLMENT MANAGEMENT (Program-based)
-// ============================================
-
-// @desc    Get course enrollments (students enrolled in program with this course)
-// @route   GET /api/courses/:id/enrollments
-// @access  Admin & Instructor
 export const getCourseEnrollments = asyncHandler(
   async (req: AuthRequest, res: Response) => {
     const course = await Course.findById(req.params.id);
@@ -680,9 +696,6 @@ export const getCourseEnrollments = asyncHandler(
   }
 );
 
-// @desc    Get course statistics
-// @route   GET /api/courses/:id/stats
-// @access  Admin & Instructor
 export const getCourseStats = asyncHandler(
   async (req: AuthRequest, res: Response) => {
     const course = await Course.findById(req.params.id);
@@ -754,13 +767,6 @@ export const getCourseStats = asyncHandler(
   }
 );
 
-// ============================================
-// STUDENT COURSE ACCESS (Program-based)
-// ============================================
-
-// @desc    Get student's enrolled courses
-// @route   GET /api/courses/my-courses
-// @access  Private (Student)
 export const getMyEnrolledCourses = asyncHandler(
   async (req: AuthRequest, res: Response) => {
     if (!req.user) {
