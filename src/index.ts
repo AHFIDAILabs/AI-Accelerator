@@ -58,12 +58,31 @@ app.use(
   })
 );
 
+// src/index.ts
+
+const allowedOrigins = [
+  'http://localhost:3000',
+  'https://ahfidlearn.netlify.app',
+  process.env.CLIENT_URL, // Fallback to env variable
+].filter(Boolean); // Remove undefined values
+
 const corsOptions = {
-  origin: process.env.CLIENT_URL || 'http://localhost:3000',
+  origin: (origin: string | undefined, callback: any) => {
+    // Allow requests with no origin (like mobile apps, Postman, curl)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      console.log('❌ CORS blocked origin:', origin);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 };
+
 app.use(cors(corsOptions));
 
 app.use(express.json({ limit: '10mb' }));
