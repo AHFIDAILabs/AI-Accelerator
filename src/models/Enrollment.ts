@@ -20,6 +20,7 @@ export interface IEnrollment extends Document {
 
   coursesProgress: {
     course: mongoose.Types.ObjectId;
+    courseId: mongoose.Types.ObjectId;
     status: EnrollmentStatus;
     lessonsCompleted: number;
     totalLessons: number;
@@ -46,6 +47,7 @@ const enrollmentSchema = new Schema<IEnrollment>(
 
   coursesProgress: [{
     course: { type: Schema.Types.ObjectId, ref: 'Course', required: true },
+    courseId: { type: Schema.Types.ObjectId, ref: 'Course', index: true },
     status: { type: String, enum: Object.values(EnrollmentStatus), default: EnrollmentStatus.PENDING },
     lessonsCompleted: { type: Number, default: 0 },
     totalLessons: { type: Number, default: 0 },

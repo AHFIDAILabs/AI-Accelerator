@@ -41,6 +41,8 @@ export const verifyRefreshToken = (token: string): TokenPayload => {
 };
 
 // Send both tokens in response
+// utils/generateToken.ts (or wherever this function is)
+
 export const sendTokenResponse = (
   userId: string,
   statusCode: number,
@@ -65,7 +67,26 @@ export const sendTokenResponse = (
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'strict' as const,
-    path: '/api/auth/refresh', // Only send on refresh endpoint
+    path: '/api/v1/auth/refresh', // ✅ Fixed path
+  };
+
+  // ✅ Create full user response matching frontend User type
+  const userResponse = {
+    _id: user._id.toString(), // ✅ Changed from 'id' to '_id'
+    firstName: user.firstName,
+    lastName: user.lastName,
+    email: user.email,
+    role: user.role,
+    status: user.status,
+    profileImage: user.profileImage,
+    phoneNumber: user.phoneNumber,
+    // Student-specific fields
+    cohort: user.studentProfile?.cohort,
+    githubProfile: user.studentProfile?.githubProfile,
+    linkedinProfile: user.studentProfile?.linkedinProfile,
+    portfolioUrl: user.studentProfile?.portfolioUrl,
+    enrollmentDate: user.studentProfile?.enrollmentDate,
+    lastLogin: user.lastLogin,
   };
 
   res
@@ -76,14 +97,7 @@ export const sendTokenResponse = (
       success: true,
       accessToken,
       refreshToken,
-      user: {
-        id: user._id,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        email: user.email,
-        role: user.role,
-        status: user.status,
-      },
+      user: userResponse, // ✅ Full user object
     });
 };
 

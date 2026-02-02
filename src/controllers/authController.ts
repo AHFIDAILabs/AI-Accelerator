@@ -147,20 +147,21 @@ export const login = asyncHandler(
 // @route   GET /api/v1/auth/me
 // @access  Private
 // ============================================
+
 export const getMe = asyncHandler(
   async (req: AuthRequest, res: Response, next: NextFunction) => {
     if (!req.user) {
-      res.status(401).json({
+      return res.status(401).json({
         success: false,
         error: 'Not authorized',
       });
-      return;
     }
 
-    res.status(200).json({
+    // ✅ Return full user object matching frontend User type
+    return res.status(200).json({
       success: true,
       data: {
-        id: req.user._id,
+        _id: req.user._id.toString(), // ✅ Changed from 'id' to '_id'
         firstName: req.user.firstName,
         lastName: req.user.lastName,
         email: req.user.email,

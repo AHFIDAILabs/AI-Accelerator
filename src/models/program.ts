@@ -78,4 +78,7 @@ const programSchema = new Schema<IProgram>(
 // Optional: Index for faster program listing
 programSchema.index({ title: 1, category: 1 });
 programSchema.index({ isPublished: 1, order: 1 });
+programSchema.index({ createdBy: 1 });
+programSchema.index({ instructors: 1 });
+
 export const Program: mongoose.Model<IProgram> = mongoose.model<IProgram>("Program", programSchema);

@@ -2,6 +2,32 @@ import cloudinaryLib from '../config/claudinary';
 
 export class CloudinaryHelper {
   /**
+ * Upload file to Cloudinary
+ */
+static async uploadFile(
+  filePath: string,
+  resourceType: 'image' | 'video' | 'raw' = 'image',
+  folder: string = 'uploads'
+): Promise<{ secure_url: string; public_id: string }> {
+  try {
+    const result = await cloudinaryLib.uploader.upload(filePath, {
+      resource_type: resourceType,
+      folder,
+    });
+
+    console.log(`✅ File uploaded to Cloudinary: ${result.public_id}`);
+
+    return {
+      secure_url: result.secure_url,
+      public_id: result.public_id,
+    };
+  } catch (error) {
+    console.error('❌ Cloudinary upload error:', error);
+    throw error;
+  }
+}
+
+  /**
    * Delete file from Cloudinary
    */
   static async deleteFile(publicId: string, resourceType: 'image' | 'video' | 'raw' = 'image'): Promise<void> {

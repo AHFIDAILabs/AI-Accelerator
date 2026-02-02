@@ -23,6 +23,9 @@ export interface IUser extends Document {
   status: UserStatus;
   profileImage?: string;
   phoneNumber?: string;
+  programId?: mongoose.Types.ObjectId[];
+  courseIds?: mongoose.Types.ObjectId[];
+  
 
   // Role-specific sub-docs
   studentProfile?: {
@@ -31,6 +34,8 @@ export interface IUser extends Document {
     githubProfile?: string;
     linkedinProfile?: string;
     portfolioUrl?: string;
+    programId?: mongoose.Types.ObjectId[];
+  courseIds?: mongoose.Types.ObjectId[];
   };
 
   instructorProfile?: {
@@ -77,18 +82,26 @@ const userSchema = new Schema<IUser>(
       enrollmentDate: { type: Date, default: Date.now },
       githubProfile: String,
       linkedinProfile: String,
-      portfolioUrl: String
+      portfolioUrl: String,
+      
     },
 
     instructorProfile: {
       bio: String,
       coursesTaught: [{ type: Schema.Types.ObjectId, ref: 'Course' }],
+      programs: [{ type: Schema.Types.ObjectId, ref: 'Program' }],
       linkedinProfile: String
     },
 
-    adminProfile: {
-      permissions: [String]
-    },
+    programId: [{ type: Schema.Types.ObjectId, ref: 'Program' }],
+  courseIds: [{ type: Schema.Types.ObjectId, ref: 'Course' }],
+
+  adminProfile: {
+  permissions: {
+    type: [String],
+    default: ['createProgram', 'promoteInstructor', 'viewReports']
+  }
+},
 
     // Security fields
     resetPasswordToken: String,

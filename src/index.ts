@@ -30,6 +30,7 @@ import notificationRouter from './routes/notificationRouter';
 import progressRouter from './routes/progressRouter';
 import submissionRouter from './routes/submissionRouter';
 import programRouter from './routes/programRouter';
+import instructorRouter from './routes/instructorRouter';
 
 // Error handler middleware
 import { errorHandler } from './middlewares/errorHandler';
@@ -106,7 +107,7 @@ app.use('/api/', generalLimiter);
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 5,
+  max: 10,
   message: 'Too many authentication attempts, try again later.',
   skipSuccessfulRequests: true,
 });
@@ -152,6 +153,15 @@ app.use((req, _res, next) => {
   next();
 });
 
+
+app.use((err: any, req: any, res: any, next: any) => {
+  console.error(err);
+
+  res.status(err.status || 500).json({
+    success: false,
+    error: err.message || "Server error"
+  });
+});
 // ============================================
 // API ROUTES
 // ============================================
@@ -187,6 +197,7 @@ app.get('/api', (_req: Request, res: Response) => {
       progress: '/api/v1/progress',
       program: '/api/v1/programs',
       submission: '/api/v1/submission',
+      instructor: '/api/v1/instructor',
     },
   });
 });
@@ -205,6 +216,7 @@ app.use('/api/v1/notifications', notificationRouter);
 app.use('/api/v1/progress', progressRouter);
 app.use('/api/v1/programs', programRouter);
 app.use('/api/v1/submission', submissionRouter);
+app.use('/api/v1/instructor', instructorRouter);
 
 // Error Handling
 app.use(notFound);

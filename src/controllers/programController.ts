@@ -80,29 +80,54 @@ export const updateProgram = asyncHandler(async (req: AuthRequest, res: Response
 // GET ALL PROGRAMS (Filters)
 // =============================
 export const getPrograms = asyncHandler(async (req: AuthRequest, res: Response) => {
-  let filter: any = { isPublished: true };
+  const { page = "1", limit = "12", isPublished, category } = req.query;
 
-  // Admin sees all
-  if (req.user?.role === UserRole.ADMIN) filter = {};
+  const pageNum = Math.max(1, parseInt(page as string));
+  const limitNum = Math.min(50, parseInt(limit as string)); // safety cap
+  const skip = (pageNum - 1) * limitNum;
 
-  // Instructor sees theirs
-  if (req.user?.role === UserRole.INSTRUCTOR) {
-    filter = {
-      $or: [
-        { isPublished: true },
-        { createdBy: req.user._id },
-        { instructors: req.user._id }
-      ]
-    };
+  let filter: any = {};
+
+  // Role rules
+  if (req.user?.role === UserRole.ADMIN) {
+    filter = {};
+  } else if (req.user?.role === UserRole.INSTRUCTOR) {
+    filter.$or = [
+      { isPublished: true },
+      { createdBy: req.user._id },
+      { instructors: req.user._id }
+    ];
+  } else {
+    filter.isPublished = true;
   }
 
-  const programs = await Program.find(filter)
-    .populate("instructors", "firstName lastName avatar")
-    .select('-__v');
+  // Query filters
+  if (isPublished !== undefined) filter.isPublished = isPublished === "true";
+  if (category) filter.category = category;
 
-  res.json({ success: true, data: programs });
+  // 🚀 Run count + data query in parallel
+  const [total, programs] = await Promise.all([
+    Program.countDocuments(filter),
+    Program.find(filter)
+      .populate({
+        path: "instructors",
+        select: "firstName lastName avatar",
+        options: { strictPopulate: false }
+      })
+      .select("-__v")
+      .skip(skip)
+      .limit(limitNum)
+      .lean()
+  ]);
+
+  res.json({
+    success: true,
+    data: programs,
+    total,
+    page: pageNum,
+    pages: Math.ceil(total / limitNum)
+  });
 });
-
 
 // =============================
 // GET SINGLE PROGRAM (BASIC INFO)

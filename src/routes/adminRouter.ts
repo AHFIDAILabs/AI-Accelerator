@@ -31,6 +31,13 @@ import {
   // Reports
   getUserActivityReport,
   getCourseCompletionReport,
+
+  // Programs
+  getAllPrograms,
+  getProgramById, 
+  updateProgram,
+  deleteProgram,
+  createProgram,
 } from '../controllers/adminController';
 
 import { protect } from '../middlewares/auth';
@@ -41,6 +48,11 @@ const adminRouter = express.Router();
 
 // All admin routes require authentication
 adminRouter.use(protect);
+//=============================================
+// PROGRAM MANAGEMENT (Admin Only)
+// ============================================
+
+adminRouter.get('/')
 
 // ============================================
 // USER MANAGEMENT (Admin Only)

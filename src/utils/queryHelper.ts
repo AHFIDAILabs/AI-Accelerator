@@ -1,37 +1,48 @@
 import { Query } from 'mongoose';
 
-export class QueryHelper {
-  query: Query<any, any>;
+const MAX_LIMIT = 100;
+
+export class QueryHelper<T> {
+  query: Query<T[], T>;
   queryString: any;
 
-  constructor(query: Query<any, any>, queryString: any) {
+  constructor(query: Query<T[], T>, queryString: any) {
     this.query = query;
     this.queryString = queryString;
   }
 
-  filter() {
+  // ---------------- FILTER ----------------
+  filter(allowedFields: string[] = []) {
     const queryObj = { ...this.queryString };
-    const excludedFields = ['page', 'sort', 'limit', 'fields', 'search'];
-    excludedFields.forEach(field => delete queryObj[field]);
+    const excluded = ['page', 'sort', 'limit', 'fields', 'search'];
+    excluded.forEach(f => delete queryObj[f]);
 
-    // Advanced filtering (gte, gt, lte, lt)
+    // Whitelist fields
+    Object.keys(queryObj).forEach(key => {
+      if (allowedFields.length && !allowedFields.includes(key)) {
+        delete queryObj[key];
+      }
+    });
+
     let queryStr = JSON.stringify(queryObj);
-    queryStr = queryStr.replace(/\b(gte|gt|lte|lt)\b/g, match => `$${match}`);
+    queryStr = queryStr.replace(/\b(gte|gt|lte|lt)\b/g, m => `$${m}`);
 
     this.query = this.query.find(JSON.parse(queryStr));
     return this;
   }
 
-  sort() {
+  // ---------------- SORT ----------------
+  sort(defaultSort = '-createdAt') {
     if (this.queryString.sort) {
       const sortBy = this.queryString.sort.split(',').join(' ');
       this.query = this.query.sort(sortBy);
     } else {
-      this.query = this.query.sort('-createdAt');
+      this.query = this.query.sort(defaultSort);
     }
     return this;
   }
 
+  // ---------------- FIELD LIMIT ----------------
   limitFields() {
     if (this.queryString.fields) {
       const fields = this.queryString.fields.split(',').join(' ');
@@ -42,22 +53,33 @@ export class QueryHelper {
     return this;
   }
 
+  // ---------------- PAGINATION ----------------
   paginate() {
-    const page = parseInt(this.queryString.page, 10) || 1;
-    const limit = parseInt(this.queryString.limit, 10) || 10;
-    const skip = (page - 1) * limit;
+    let page = parseInt(this.queryString.page, 10) || 1;
+    let limit = parseInt(this.queryString.limit, 10) || 10;
+    let query = this.query;
 
+    page = Math.max(1, page);
+    limit = Math.min(Math.max(1, limit), MAX_LIMIT);
+query = this.query;
+
+    const skip = (page - 1) * limit;
     this.query = this.query.skip(skip).limit(limit);
-    return this;
+
+    return { page, limit, query };
   }
 
+  // ---------------- SEARCH ----------------
   search(fields: string[]) {
     if (this.queryString.search) {
+      const safeSearch = this.queryString.search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
       const searchQuery = {
         $or: fields.map(field => ({
-          [field]: { $regex: this.queryString.search, $options: 'i' },
+          [field]: { $regex: safeSearch, $options: 'i' },
         })),
       };
+
       this.query = this.query.find(searchQuery);
     }
     return this;

@@ -1,407 +1,222 @@
 import { Request, Response } from "express";
 import mongoose from "mongoose";
+import fs from "fs/promises";
 import { asyncHandler } from "../middlewares/asyncHandler";
 import { AuthRequest } from "../middlewares/auth";
-import { Assessment, IAssessment, IQuestion } from "../models/Assessment";
+import { Assessment, IAssessment } from "../models/Assessment";
 import { Module } from "../models/Module";
 import { Lesson } from "../models/Lesson";
 import { Course } from "../models/Course";
 import { UserRole } from "../models/user";
 import { QueryHelper } from "../utils/queryHelper";
 import { getIo } from "../config/socket";
-import { pushNotification} from "../utils/pushNotification";
+import { pushNotification } from "../utils/pushNotification";
 import { User } from "../models/user";
 import { Enrollment } from "../models/Enrollment";
 import { NotificationType } from "../models/Notification";
+import { chunkArray } from "../utils/chunkArray";
 
 
 // ==============================
 // CREATE ASSESSMENT
 // ==============================
-export const createAssessment = asyncHandler(
-  async (req: AuthRequest, res: Response) => {
-    const {
-      courseId,
-      moduleId,
-      lessonId,
-      title,
-      description,
-      type,
-      questions,
-      passingScore,
-      duration,
-      order,
-    } = req.body;
+export const createAssessment = asyncHandler(async (req: AuthRequest, res: Response) => {
+  if (!req.user) return res.status(401).json({ success: false, error: "Unauthorized" });
 
-    if (!req.user) {
-      res.status(401).json({ success: false, error: "Unauthorized" });
-      return;
+  const {
+    courseId, moduleId, lessonId,
+    title, description, type, questions,
+    passingScore, duration, order
+  } = req.body;
+
+  const course = await Course.findById(courseId);
+  if (!course) return res.status(404).json({ success: false, error: "Course not found" });
+
+  if (req.user.role === UserRole.INSTRUCTOR && course.createdBy.toString() !== req.user._id.toString()) {
+    return res.status(403).json({ success: false, error: "Cannot add assessment to this course" });
+  }
+
+  // Validate module
+  if (moduleId) {
+    const module = await Module.findById(moduleId);
+    if (!module || module.course.toString() !== courseId) {
+      return res.status(400).json({ success: false, error: "Invalid module" });
     }
+  }
 
-    // Validate course
-    const course = await Course.findById(courseId);
-    if (!course) {
-      res.status(404).json({ success: false, error: "Course not found" });
-      return;
+  // Validate lesson
+  if (lessonId) {
+    const lesson = await Lesson.findById(lessonId);
+    if (!lesson || (moduleId && lesson.module.toString() !== moduleId)) {
+      return res.status(400).json({ success: false, error: "Invalid lesson" });
     }
+  }
 
-    // Instructor can only add to their course
-    if (
-      req.user.role === UserRole.INSTRUCTOR &&
-      course.createdBy.toString() !== req.user._id.toString()
-    ) {
-      res.status(403).json({
-        success: false,
-        error: "Cannot add assessment to this course",
-      });
-      return;
-    }
+  const session = await mongoose.startSession();
+  session.startTransaction();
 
-    // Validate module belongs to course
-    if (moduleId) {
-      const module = await Module.findById(moduleId);
-      if (!module || module.course._id.toString() !== courseId) {
-        res.status(400).json({ success: false, error: "Invalid module" });
-        return;
-      }
-    }
+  try {
+    const assessment = await Assessment.create([{
+      courseId, moduleId, lessonId,
+      title, description, type, questions,
+      passingScore, duration, attempts: 2, order,
+      isPublished: false
+    }], { session });
 
-    // Validate lesson belongs to module
-    if (lessonId) {
-      const lesson = await Lesson.findById(lessonId);
-      if (!lesson || (moduleId && lesson.module._id.toString() !== moduleId)) {
-        res.status(400).json({ success: false, error: "Invalid lesson" });
-        return;
-      }
-    }
-
-    const assessment = await Assessment.create({
-      courseId,
-      moduleId,
-      lessonId,
-      title,
-      description,
-      type,
-      questions,
-      passingScore,
-      duration,
-      attempts: 2,
-      order,
-      isPublished: false,
-    });
-
-    // Notify admin about new assessment (for approval)
+    // Notify admins
     const admins = await User.find({ role: UserRole.ADMIN });
     const io = getIo();
+   const notifications = admins.map(admin => ({
+  userId: admin._id,
+  type: NotificationType.COURSE_UPDATE,
+  title: "New Assessment Created",
+  message: `${req.user?.firstName} ${req.user?.lastName} created "${title}" for course "${course.title}"`,
+  relatedId: assessment[0]._id,
+  relatedModel: "Assessment" as const // <-- note 'as const'
+}));
 
-    for (const admin of admins) {
-      // Create notification
-      await pushNotification({
-        userId: admin._id,
-        type: NotificationType.COURSE_UPDATE,
-        title: "New Assessment Created",
-        message: `${req.user.firstName} ${req.user.lastName} created a new assessment: "${title}" for course "${course.title}"`,
-        relatedId: assessment._id,
-        relatedModel: "Assessment",
-      });
 
-      // Emit real-time notification
-      io.to(admin._id.toString()).emit("notification", {
-        type: NotificationType.COURSE_UPDATE,
-        title: "New Assessment Created",
-        message: `New assessment "${title}" requires review`,
-        assessmentId: assessment._id,
-        courseId: course._id,
-        timestamp: new Date(),
-      });
+    for (const batch of chunkArray(notifications, 100)) {
+      await Promise.all(batch.map(n => pushNotification(n)));
+      batch.forEach(n => io.to(n.userId.toString()).emit("notification", n));
     }
 
-    res.status(201).json({
+    await session.commitTransaction();
+    session.endSession();
+
+   return res.status(201).json({
       success: true,
       message: "Assessment created successfully (pending publication)",
-      data: assessment,
+      data: assessment[0]
     });
+  } catch (err) {
+    await session.abortTransaction();
+    session.endSession();
+    throw err;
   }
-);
+});
+
 
 // ==============================
 // GET ALL ASSESSMENTS (ADMIN)
 // ==============================
-export const getAllAssessmentsAdmin = asyncHandler(
-  async (req: AuthRequest, res: Response) => {
-    let query = Assessment.find().populate(
-      "courseId moduleId lessonId",
-      "title"
-    );
-
-    const queryHelper = new QueryHelper(query, req.query);
-    query = queryHelper
-      .filter()
-      .search(["title", "description"])
-      .sort()
-      .paginate().query;
-
-    const assessments = await query;
-
-    res.status(200).json({
-      success: true,
-      count: assessments.length,
-      data: assessments,
-    });
-  }
-);
+export const getAllAssessmentsAdmin = asyncHandler(async (req: AuthRequest, res: Response) => {
+  let query = Assessment.find().populate("courseId moduleId lessonId", "title");
+  const queryHelper = new QueryHelper(query, req.query);
+  query = queryHelper.filter().search(["title", "description"]).sort().paginate().query;
+  const assessments = await query;
+  res.status(200).json({ success: true, count: assessments.length, data: assessments });
+});
 
 // ==============================
 // GET PUBLISHED ASSESSMENTS (STUDENT)
 // ==============================
-export const getPublishedAssessments = asyncHandler(
-  async (req: AuthRequest, res: Response) => {
-    let query = Assessment.find({ isPublished: true }).populate(
-      "courseId moduleId lessonId",
-      "title"
-    );
+export const getPublishedAssessments = asyncHandler(async (req: AuthRequest, res: Response) => {
+  let filter: any = { isPublished: true };
 
-    const queryHelper = new QueryHelper(query, req.query);
-    query = queryHelper
-      .filter()
-      .search(["title", "description"])
-      .sort()
-      .paginate().query;
-
-    const assessments = await query;
-
-    res.status(200).json({
-      success: true,
-      count: assessments.length,
-      data: assessments,
-    });
+  if (req.user?.role === UserRole.STUDENT) {
+    const enrollments = await Enrollment.find({ studentId: req.user._id }).select("coursesProgress");
+    const courseIds = enrollments.flatMap(e => e.coursesProgress.map(p => p.courseId));
+    filter.courseId = { $in: courseIds };
   }
-);
+
+  let query = Assessment.find(filter).populate("courseId moduleId lessonId", "title");
+  const queryHelper = new QueryHelper(query, req.query);
+  query = queryHelper.filter().search(["title", "description"]).sort().paginate().query;
+  const assessments = await query;
+
+ return res.status(200).json({ success: true, count: assessments.length, data: assessments });
+});
 
 // ==============================
 // GET SINGLE ASSESSMENT
 // ==============================
-export const getAssessmentById = asyncHandler(
-  async (req: AuthRequest, res: Response) => {
-    const assessment = await Assessment.findById(req.params.id).populate(
-      "courseId moduleId lessonId",
-      "title"
-    );
-
-    if (
-      !assessment ||
-      (!assessment.isPublished &&
-        req.user?.role !== UserRole.ADMIN &&
-        req.user?.role !== UserRole.INSTRUCTOR)
-    ) {
-      res.status(404).json({ success: false, error: "Assessment not found" });
-      return;
-    }
-
-    res.status(200).json({ success: true, data: assessment });
+export const getAssessmentById = asyncHandler(async (req: AuthRequest, res: Response) => {
+  const assessment = await Assessment.findById(req.params.id).populate("courseId moduleId lessonId", "title");
+  if (!assessment || (!assessment.isPublished && ![UserRole.ADMIN, UserRole.INSTRUCTOR].includes(req.user?.role!))) {
+    return res.status(404).json({ success: false, error: "Assessment not found" });
   }
-);
+
+  // Students must be enrolled
+  if (req.user?.role === UserRole.STUDENT) {
+    const enrollment = await Enrollment.findOne({ studentId: req.user._id, courseId: assessment.courseId });
+    if (!enrollment) return res.status(403).json({ success: false, error: "Access denied" });
+  }
+
+  return res.status(200).json({ success: true, data: assessment });
+});
 
 // ==============================
 // UPDATE ASSESSMENT
 // ==============================
-export const updateAssessment = asyncHandler(
-  async (req: AuthRequest, res: Response) => {
-    if (!req.user) {
-      res.status(401).json({ success: false, error: "Unauthorized" });
-      return;
-    }
+export const updateAssessment = asyncHandler(async (req: AuthRequest, res: Response) => {
+  if (!req.user) return res.status(401).json({ success: false, error: "Unauthorized" });
 
-    const assessment = await Assessment.findById(req.params.id);
-    if (!assessment) {
-      res.status(404).json({ success: false, error: "Assessment not found" });
-      return;
-    }
+  const assessment = await Assessment.findById(req.params.id);
+  if (!assessment) return res.status(404).json({ success: false, error: "Assessment not found" });
 
-    const course = await Course.findById(assessment.courseId);
-    if (!course) {
-      res.status(404).json({ success: false, error: "Course not found" });
-      return;
-    }
+  const course = await Course.findById(assessment.courseId);
+  if (!course) return res.status(404).json({ success: false, error: "Course not found" });
 
-    // Instructors can only update their own course assessments
-    if (req.user.role === UserRole.INSTRUCTOR) {
-      if (course.createdBy.toString() !== req.user._id.toString()) {
-        res.status(403).json({
-          success: false,
-          error: "Cannot update this assessment",
-        });
-        return;
-      }
-      // Updating reverts assessment to unpublished
-      assessment.isPublished = false;
-    }
-
-    // Update assessment
-    Object.assign(assessment, req.body);
-    await assessment.save();
-
-    // Notify enrolled students if assessment was published
-    if (assessment.isPublished) {
-      const enrollments = await Enrollment.find({
-        courseId: assessment.courseId,
-        status: "active",
-      }).populate("studentId");
-
-      const io = getIo();
-
-      for (const enrollment of enrollments) {
-        if (enrollment.studentId) {
-          const student = enrollment.studentId as any;
-
-          // Create notification
-          await pushNotification({
-            userId: student._id,
-            type: NotificationType.COURSE_UPDATE,
-            title: "Assessment Updated",
-            message: `The assessment "${assessment.title}" has been updated`,
-            relatedId: assessment._id,
-            relatedModel: "Assessment",
-          });
-
-          // Emit real-time notification
-          io.to(student._id.toString()).emit("notification", {
-            type: NotificationType.COURSE_UPDATE,
-            title: "Assessment Updated",
-            message: `"${assessment.title}" has been updated`,
-            assessmentId: assessment._id,
-            courseId: course._id,
-            timestamp: new Date(),
-          });
-        }
-      }
-    }
-
-    res.json({
-      success: true,
-      message: "Assessment updated successfully",
-      data: assessment,
-    });
+  if (req.user.role === UserRole.INSTRUCTOR && course.createdBy.toString() !== req.user._id.toString()) {
+    return res.status(403).json({ success: false, error: "Cannot update this assessment" });
   }
-);
+
+  // Whitelist updates
+  const allowedUpdates: Partial<IAssessment> = {
+    title: req.body.title,
+    description: req.body.description,
+    questions: req.body.questions,
+    passingScore: req.body.passingScore,
+    duration: req.body.duration,
+    order: req.body.order,
+    endDate: req.body.endDate
+  };
+  Object.entries(allowedUpdates).forEach(([key, value]) => { if (value !== undefined) (assessment as any)[key] = value; });
+
+  // Instructors: revert to unpublished on update
+  if (req.user.role === UserRole.INSTRUCTOR) assessment.isPublished = false;
+
+  await assessment.save();
+  return res.json({ success: true, message: "Assessment updated successfully", data: assessment });
+});
+
 
 // ==============================
 // DELETE ASSESSMENT
 // ==============================
-export const deleteAssessment = asyncHandler(
-  async (req: AuthRequest, res: Response) => {
-    const assessment = await Assessment.findById(req.params.id);
-    
-    if (!assessment) {
-      res.status(404).json({ success: false, error: "Assessment not found" });
-      return;
-    }
+export const deleteAssessment = asyncHandler(async (req: AuthRequest, res: Response) => {
+  const assessment = await Assessment.findById(req.params.id);
+  if (!assessment) return res.status(404).json({ success: false, error: "Assessment not found" });
 
-    // Notify enrolled students if assessment was published
-    if (assessment.isPublished) {
-      const enrollments = await Enrollment.find({
-        courseId: assessment.courseId,
-        status: "active",
-      }).populate("studentId");
-
-      const io = getIo();
-
-      for (const enrollment of enrollments) {
-        if (enrollment.studentId) {
-          const student = enrollment.studentId as any;
-
-          // Create notification
-          await pushNotification({
-            userId: student._id,
-            type: NotificationType.COURSE_UPDATE,
-            title: "Assessment Removed",
-            message: `The assessment "${assessment.title}" has been removed from the course`,
-            relatedId: assessment.courseId,
-            relatedModel: "Course",
-          });
-
-          // Emit real-time notification
-          io.to(student._id.toString()).emit("notification", {
-            type: NotificationType.COURSE_UPDATE,
-            title: "Assessment Removed",
-            message: `"${assessment.title}" has been removed`,
-            courseId: assessment.courseId,
-            timestamp: new Date(),
-          });
-        }
-      }
-    }
-
-    await assessment.deleteOne();
-
-    res.status(200).json({
-      success: true,
-      message: "Assessment deleted successfully",
-    });
+  const course = await Course.findById(assessment.courseId);
+  if (req.user?.role === UserRole.INSTRUCTOR && course?.createdBy.toString() !== req.user._id.toString()) {
+    return res.status(403).json({ success: false, error: "Access denied" });
   }
-);
+
+  await assessment.deleteOne();
+ return res.status(200).json({ success: true, message: "Assessment deleted successfully" });
+});
+
 
 // ==============================
 // PUBLISH / UNPUBLISH ASSESSMENT
 // ==============================
-export const toggleAssessmentPublish = asyncHandler(
-  async (req: AuthRequest, res: Response) => {
-    const assessment = await Assessment.findById(req.params.id).populate('courseId', 'title');
-    
-    if (!assessment) {
-      res.status(404).json({ success: false, error: "Assessment not found" });
-      return;
-    }
+export const toggleAssessmentPublish = asyncHandler(async (req: AuthRequest, res: Response) => {
+  const assessment = await Assessment.findById(req.params.id);
+  if (!assessment) return res.status(404).json({ success: false, error: "Assessment not found" });
 
-    const wasPublished = assessment.isPublished;
-    assessment.isPublished = !assessment.isPublished;
-    await assessment.save();
-
-    // Notify enrolled students when assessment is published
-    if (assessment.isPublished && !wasPublished) {
-      const enrollments = await Enrollment.find({
-        courseId: assessment.courseId,
-        status: "active",
-      }).populate("studentId");
-
-      const io = getIo();
-      const course = assessment.courseId as any;
-
-      for (const enrollment of enrollments) {
-        if (enrollment.studentId) {
-          const student = enrollment.studentId as any;
-
-          // Create notification
-          await pushNotification({
-            userId: student._id,
-            type: NotificationType.ASSESSMENT_DUE,
-            title: "New Assessment Available",
-            message: `A new assessment "${assessment.title}" is now available in ${course.title}`,
-            relatedId: assessment._id,
-            relatedModel: "Assessment",
-          });
-
-          // Emit real-time notification
-          io.to(student._id.toString()).emit("notification", {
-            type: NotificationType.ASSESSMENT_DUE,
-            title: "New Assessment Available",
-            message: `"${assessment.title}" is now available`,
-            assessmentId: assessment._id,
-            courseId: assessment.courseId,
-            dueDate: assessment.endDate,
-            timestamp: new Date(),
-          });
-        }
-      }
-    }
-
-    res.status(200).json({
-      success: true,
-      message: `Assessment ${assessment.isPublished ? "published" : "unpublished"} successfully`,
-      data: assessment,
-    });
+  const course = await Course.findById(assessment.courseId);
+  if (req.user?.role === UserRole.INSTRUCTOR && course?.createdBy.toString() !== req.user._id.toString()) {
+    return res.status(403).json({ success: false, error: "Access denied" });
   }
-);
+
+  const wasPublished = assessment.isPublished;
+  assessment.isPublished = !assessment.isPublished;
+  await assessment.save();
+
+ return res.status(200).json({ success: true, message: `Assessment ${assessment.isPublished ? "published" : "unpublished"} successfully`, data: assessment });
+});
 
 // ==============================
 // REORDER ASSESSMENTS
@@ -437,64 +252,41 @@ export const reorderAssessments = asyncHandler(
 // ==============================
 // GET ASSESSMENTS BY COURSE
 // ==============================
-export const getAssessmentsByCourse = asyncHandler(
-  async (req: AuthRequest, res: Response) => {
-    const { courseId } = req.params;
+export const getAssessmentsByCourse = asyncHandler(async (req: AuthRequest, res: Response) => {
+  const { courseId } = req.params;
+  const course = await Course.findById(courseId);
+  if (!course) return res.status(404).json({ success: false, error: "Course not found" });
 
-    const course = await Course.findById(courseId);
-    if (!course) {
-      res.status(404).json({ success: false, error: "Course not found" });
-      return;
-    }
-
-    // Students only see published assessments
-    const filter: any = { courseId };
-    if (req.user?.role === UserRole.STUDENT) {
-      filter.isPublished = true;
-    }
-
-    const assessments = await Assessment.find(filter)
-      .populate("moduleId lessonId", "title")
-      .sort({ order: 1 });
-
-    res.status(200).json({
-      success: true,
-      count: assessments.length,
-      data: assessments,
-    });
+  const filter: any = { courseId };
+  if (req.user?.role === UserRole.STUDENT) {
+    const enrollment = await Enrollment.findOne({ studentId: req.user._id, courseId });
+    if (!enrollment) return res.status(403).json({ success: false, error: "Access denied" });
+    filter.isPublished = true;
   }
-);
+
+  const assessments = await Assessment.find(filter).populate("moduleId lessonId", "title").sort({ order: 1 });
+ return res.status(200).json({ success: true, count: assessments.length, data: assessments });
+});
+
 
 // ==============================
 // GET ASSESSMENTS BY MODULE
 // ==============================
-export const getAssessmentsByModule = asyncHandler(
-  async (req: AuthRequest, res: Response) => {
-    const { moduleId } = req.params;
+export const getAssessmentsByModule = asyncHandler(async (req: AuthRequest, res: Response) => {
+  const { moduleId } = req.params;
+  const module = await Module.findById(moduleId);
+  if (!module) return res.status(404).json({ success: false, error: "Module not found" });
 
-    const module = await Module.findById(moduleId);
-    if (!module) {
-      res.status(404).json({ success: false, error: "Module not found" });
-      return;
-    }
-
-    // Students only see published assessments
-    const filter: any = { moduleId };
-    if (req.user?.role === UserRole.STUDENT) {
-      filter.isPublished = true;
-    }
-
-    const assessments = await Assessment.find(filter)
-      .populate("lessonId", "title")
-      .sort({ order: 1 });
-
-    res.status(200).json({
-      success: true,
-      count: assessments.length,
-      data: assessments,
-    });
+  const filter: any = { moduleId };
+  if (req.user?.role === UserRole.STUDENT) {
+    const enrollment = await Enrollment.findOne({ studentId: req.user._id, courseId: module.course });
+    if (!enrollment) return res.status(403).json({ success: false, error: "Access denied" });
+    filter.isPublished = true;
   }
-);
+
+  const assessments = await Assessment.find(filter).populate("lessonId", "title").sort({ order: 1 });
+  return res.status(200).json({ success: true, count: assessments.length, data: assessments });
+});
 
 // ==============================
 // SEND ASSESSMENT DUE REMINDER
