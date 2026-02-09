@@ -304,6 +304,12 @@ export const getPublishedModules = asyncHandler(async (req: AuthRequest, res: Re
 // GET MODULE BY ID
 // ==============================
 export const getModuleById = asyncHandler(async (req: AuthRequest, res: Response) => {
+  const lessonMatch: any = {};
+
+  if (!req.user || req.user.role === 'student') {
+    lessonMatch.isPublished = true;
+  }
+
   const module = await Module.findById(req.params.id)
     .populate({
       path: 'course',
@@ -312,6 +318,11 @@ export const getModuleById = asyncHandler(async (req: AuthRequest, res: Response
         path: 'program',
         select: 'title slug'
       }
+    })
+    .populate({
+      path: 'lessons',
+      match: lessonMatch,
+      options: { sort: { order: 1 } }
     });
 
   if (!module) {
@@ -319,20 +330,15 @@ export const getModuleById = asyncHandler(async (req: AuthRequest, res: Response
     return;
   }
 
-  // Check access permissions
   if (!module.isPublished && (!req.user || !['admin', 'instructor'].includes(req.user.role))) {
     res.status(404).json({ success: false, error: "Module not found" });
     return;
   }
 
-  // Get lessons for this module
-  const lessons = await Lesson.find({ 
-    module: module._id,
-    isPublished: true 
-  }).sort({ order: 1 });
+  const lessons = module.lessons as any[];
 
-  res.status(200).json({ 
-    success: true, 
+  res.status(200).json({
+    success: true,
     data: {
       module,
       lessons,
@@ -343,6 +349,7 @@ export const getModuleById = asyncHandler(async (req: AuthRequest, res: Response
     }
   });
 });
+
 
 // ==============================
 // GET MODULES BY COURSE

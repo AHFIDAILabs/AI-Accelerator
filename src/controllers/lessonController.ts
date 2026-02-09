@@ -43,6 +43,17 @@ export const createLesson = asyncHandler(async (req: AuthRequest, res: Response)
     return;
   }
 
+  // Log received data for debugging
+  console.log('Received lesson data:', {
+    module,
+    title,
+    type,
+    estimatedMinutes,
+    learningObjectives,
+    isPreview,
+    isRequired
+  });
+
   if (!module || !title || !description || !type || !estimatedMinutes || !content) {
     res.status(400).json({ 
       success: false, 
@@ -122,23 +133,78 @@ export const createLesson = asyncHandler(async (req: AuthRequest, res: Response)
     }
   }
 
+  // Parse JSON strings from FormData (arrays and objects come as JSON strings)
+  let parsedLearningObjectives: string[] = [];
+  let parsedCodeExamples: string[] = [];
+  let parsedAssignments: string[] = [];
+  let parsedCompletionRule: any = { type: 'view' };
+
+  try {
+    if (learningObjectives) {
+      parsedLearningObjectives = typeof learningObjectives === 'string' 
+        ? JSON.parse(learningObjectives) 
+        : learningObjectives;
+    }
+  } catch (e) {
+    console.error('Error parsing learningObjectives:', e);
+  }
+
+  try {
+    if (codeExamples) {
+      parsedCodeExamples = typeof codeExamples === 'string' 
+        ? JSON.parse(codeExamples) 
+        : codeExamples;
+    }
+  } catch (e) {
+    console.error('Error parsing codeExamples:', e);
+  }
+
+  try {
+    if (assignments) {
+      parsedAssignments = typeof assignments === 'string' 
+        ? JSON.parse(assignments) 
+        : assignments;
+    }
+  } catch (e) {
+    console.error('Error parsing assignments:', e);
+  }
+
+  try {
+    if (completionRule) {
+      parsedCompletionRule = typeof completionRule === 'string' 
+        ? JSON.parse(completionRule) 
+        : completionRule;
+    }
+  } catch (e) {
+    console.error('Error parsing completionRule:', e);
+  }
+
+  // Parse boolean values from FormData (they come as strings "true"/"false")
+  const parsedIsPreview = isPreview === 'true' || isPreview === true;
+  const parsedIsRequired = isRequired === 'false' ? false : true; // default true
+
   const lesson = await Lesson.create({
     module,
     order: order || 1,
     title,
     description,
     type,
-    estimatedMinutes,
+    estimatedMinutes: parseInt(estimatedMinutes),
     content,
-    learningObjectives: learningObjectives || [],
+    learningObjectives: parsedLearningObjectives,
     resources,
-    codeExamples: codeExamples || [],
-    assignments: assignments || [],
-    isPreview: isPreview || false,
-    isRequired: isRequired !== undefined ? isRequired : true,
-    completionRule: completionRule || { type: 'view' },
+    codeExamples: parsedCodeExamples,
+    assignments: parsedAssignments,
+    isPreview: parsedIsPreview,
+    isRequired: parsedIsRequired,
+    completionRule: parsedCompletionRule,
     isPublished: false,
   });
+
+  await Module.findByIdAndUpdate(module, {
+  $push: { lessons: lesson._id }
+});
+  console.log('Lesson created successfully:', lesson._id);
 
   res.status(201).json({
     success: true,
@@ -649,6 +715,13 @@ export const getLessonsByModule = asyncHandler(async (req: AuthRequest, res: Res
   const { moduleId } = req.params;
   const { page = "1", limit = "20", includeUnpublished } = req.query;
 
+  console.log('📥 getLessonsByModule called:', {
+    moduleId,
+    includeUnpublished,
+    userRole: req.user?.role,
+    includeUnpublishedType: typeof includeUnpublished
+  });
+
   const moduleExists = await Module.findById(moduleId);
   if (!moduleExists) {
     res.status(404).json({ success: false, error: "Module not found" });
@@ -657,10 +730,24 @@ export const getLessonsByModule = asyncHandler(async (req: AuthRequest, res: Res
 
   const filter: any = { module: moduleId };
   
-  // Only show published lessons unless admin/instructor requests unpublished
-  if (!includeUnpublished || (req.user?.role !== 'admin' && req.user?.role !== 'instructor')) {
+  // Convert string 'true'/'false' to boolean
+  const shouldIncludeUnpublished = includeUnpublished === 'true';
+  const isAdminOrInstructor = req.user?.role === 'admin' || req.user?.role === 'instructor';
+  
+  console.log('🔍 Filter logic:', {
+    shouldIncludeUnpublished,
+    isAdminOrInstructor,
+    willShowUnpublished: shouldIncludeUnpublished && isAdminOrInstructor
+  });
+  
+  // Only show published lessons unless:
+  // 1. includeUnpublished is explicitly 'true' AND
+  // 2. User is admin or instructor
+  if (!shouldIncludeUnpublished || !isAdminOrInstructor) {
     filter.isPublished = true;
   }
+
+  console.log('📋 Final filter:', filter);
 
   let query = Lesson.find(filter).sort({ order: 1 });
   const queryHelper = new QueryHelper(query, req.query);
@@ -668,6 +755,12 @@ export const getLessonsByModule = asyncHandler(async (req: AuthRequest, res: Res
 
   const total = await Lesson.countDocuments(filter);
   const lessons = await query;
+
+  console.log('✅ Found lessons:', {
+    count: lessons.length,
+    total,
+    lessonIds: lessons.map(l => l._id)
+  });
 
   res.status(200).json({
     success: true,

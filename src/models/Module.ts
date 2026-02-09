@@ -2,6 +2,7 @@ import  mongoose, { Document, Model, Schema } from 'mongoose';
 
 export interface IModule extends Document {
   course: mongoose.Types.ObjectId;
+  lessons: mongoose.Types.ObjectId[];
   order: number;
 
   title: string;
@@ -28,6 +29,11 @@ const moduleSchema = new Schema<IModule>(
     required: true,
     index: true
   },
+
+  lessons: [{
+  type: Schema.Types.ObjectId,
+  ref: 'Lesson'
+}],
 
   order: {
     type: Number,

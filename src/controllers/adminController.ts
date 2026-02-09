@@ -461,8 +461,9 @@ export const getDashboardStats = asyncHandler(
       .limit(5);
 
     const recentEnrollments = await Enrollment.find()
-      .populate('studentId', 'firstName lastName email')
-      .populate('courseId', 'title')
+       .populate('studentId', 'firstName lastName email profileImage')
+  .populate('program', 'title price currency')
+      .populate('coursesProgress.courseId', 'title description')
       .sort({ enrollmentDate: -1 })
       .limit(5);
 

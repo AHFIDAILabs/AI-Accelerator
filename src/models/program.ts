@@ -6,6 +6,8 @@ export interface IProgram extends Document {
   description: string;
   category?: string;
   tags?: string[];
+  objectives? : string[];
+  level: string[];
 
   courses: mongoose.Types.ObjectId[]; // References Course
   order: number; // Optional: order in platform listing
@@ -51,11 +53,29 @@ const programSchema = new Schema<IProgram>(
   instructors: [{ type: Schema.Types.ObjectId, ref: 'User' }],
   coverImage: String,
   bannerImage: String,
-
+  level: {
+      type: [String],
+      enum: {
+        values: ["beginner", "intermediate", "advanced"],
+        message: "{VALUE} is not a valid level"
+      },
+      default: []
+    },
   price: { type: Number, default: 0 },
   currency: { type: String, default: 'USD' },
   enrollmentLimit: Number,
   isPublished: { type: Boolean, default: false },
+
+   objectives: {
+      type: [String],
+      default: [],
+      validate: {
+        validator: function(v: string[]) {
+          return v.every(obj => obj.trim().length > 0);
+        },
+        message: "Objectives cannot contain empty strings"
+      }
+    },
 
   startDate: Date,
   endDate: Date,

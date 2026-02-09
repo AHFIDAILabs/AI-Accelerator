@@ -238,26 +238,28 @@ export const createCourse = asyncHandler(
     const approvalStatus = req.user.role === 'admin' ? 'approved' : 'pending';
     const isPublished = false;
 
-    const course = await Course.create({
-      program,
-      order: order || 1,
-      title,
-      slug,
-      description,
-      estimatedHours,
-      objectives: objectives || [],
-      prerequisites: prerequisites || [],
-      targetAudience,
-      coverImage,
-      completionCriteria: completionCriteria || {
-        minimumQuizScore: 70,
-        requiredProjects: 5,
-        capstoneRequired: true,
-      },
-      createdBy: req.user._id,
-      approvalStatus,
-      isPublished,
-    });
+   // In your backend controller
+const course = await Course.create({
+  program,
+  order: order || 1,
+  title,
+  slug,
+  description,
+  estimatedHours,
+  objectives: objectives || [],
+  prerequisites: prerequisites || [],
+  targetAudience,
+  coverImage,
+  completionCriteria: completionCriteria || {
+    minimumQuizScore: 70,
+    requiredProjects: 5,
+    capstoneRequired: true,
+  },
+  instructor: req.user._id,  // ✅ ADD THIS
+  createdBy: req.user._id,
+  approvalStatus,
+  isPublished,
+});
 
     // Add course to program's courses array
     await Program.findByIdAndUpdate(program, {

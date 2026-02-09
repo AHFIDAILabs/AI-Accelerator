@@ -1,49 +1,82 @@
 // ============================================
-// src/routes/module.routes.ts
+// src/routes/moduleRouter.ts
 // ============================================
 
-import express from "express";
+import express from 'express';
+import { protect } from '../middlewares/auth';
+import { authorize } from '../middlewares/adminAuth';
+import { UserRole } from '../models/user';
 import {
   createModule,
-  getModuleById,
   getAllModulesAdmin,
   getPublishedModules,
+  getModuleById,
+  getModulesByCourse,
   updateModule,
   deleteModule,
   toggleModulePublish,
   reorderModules,
-  getModulesByCourse,
-  getModuleContent,
   getModuleStats,
-} from "../controllers/moduleController";
-import { protect } from "../middlewares/auth";
-import { UserRole } from "../models/user";
-import { authorize } from "../middlewares/adminAuth";
+  getModuleContent,
+} from '../controllers/moduleController';
+
 const moduleRouter = express.Router();
 
-// ==============================
-// Public routes (students)
-// ==============================
-moduleRouter.get("/course/:courseId", getPublishedModules); // Get all published modules for a course
-moduleRouter.get("/course/:courseId", getModulesByCourse); // Get modules by course
-moduleRouter.get("/:id", getModuleById); // Get single module (published or admin/instructor access)
-moduleRouter.get("/:moduleId/content", getModuleContent);
+// ============================================
+// PUBLIC ROUTES (No Auth Required)
+// ============================================
 
+// Get published modules (must come before /:id)
+moduleRouter.get('/published', getPublishedModules);
 
-// ==============================
-// Protected routes (admin & instructor)
-// ==============================
-moduleRouter.use(protect); // All routes below require authentication
+// ============================================
+// PROTECTED ROUTES (Auth Required)
+// ============================================
 
-moduleRouter.post("/", createModule); // Create module
-moduleRouter.put("/:id", updateModule); // Update module
-moduleRouter.delete("/:id", deleteModule); // Delete module
-moduleRouter.patch("/reorder", reorderModules); // Bulk reorder modules
+// Apply authentication to all routes below
+moduleRouter.use(protect);
 
-// Admin-only routes
-moduleRouter.patch("/:id/publish", authorize(UserRole.ADMIN), toggleModulePublish);
-moduleRouter.get("/", authorize(UserRole.ADMIN), getAllModulesAdmin); // Admin: get all modules
-moduleRouter.get("/stats/overview", authorize(UserRole.ADMIN), getModuleStats);
+// IMPORTANT: Specific routes MUST come BEFORE generic /:id route
+// Get modules by course (instructors can see unpublished)
+moduleRouter.get('/course/:courseId', getModulesByCourse);
 
+// Get module statistics (admin only)
+moduleRouter.get('/stats/overview', authorize(UserRole.ADMIN), getModuleStats);
+
+// Reorder modules
+moduleRouter.put('/reorder', authorize(UserRole.INSTRUCTOR, UserRole.ADMIN), reorderModules);
+
+// ============================================
+// GENERIC ID ROUTES (Must come AFTER specific routes)
+// ============================================
+
+// Get module by ID (public if published, protected if unpublished)
+moduleRouter.get('/:id', getModuleById);
+
+// Get module content (lessons)
+moduleRouter.get('/:moduleId/content', getModuleContent);
+
+// ============================================
+// INSTRUCTOR & ADMIN ROUTES
+// ============================================
+
+// Create module
+moduleRouter.post('/', authorize(UserRole.INSTRUCTOR, UserRole.ADMIN), createModule);
+
+// Update module
+moduleRouter.put('/:id', authorize(UserRole.INSTRUCTOR, UserRole.ADMIN), updateModule);
+
+// Toggle publish status
+moduleRouter.patch('/:id/toggle-publish', authorize(UserRole.INSTRUCTOR, UserRole.ADMIN), toggleModulePublish);
+
+// Delete module
+moduleRouter.delete('/:id', authorize(UserRole.INSTRUCTOR, UserRole.ADMIN), deleteModule);
+
+// ============================================
+// ADMIN ONLY ROUTES
+// ============================================
+
+// Get all modules (admin only)
+moduleRouter.get('/', authorize(UserRole.ADMIN), getAllModulesAdmin);
 
 export default moduleRouter;

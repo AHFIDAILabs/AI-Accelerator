@@ -103,20 +103,21 @@ export const login = asyncHandler(
     // Check if user exists (include password for verification)
     const user = await User.findOne({ email }).select('+password +refreshTokens');
 
-    if (!user) {
-      return res.status(401).json({
-        success: false,
-        error: 'Invalid credentials', // Generic message
-      });
-    }
+   
+if (!user) {
+  return res.status(401).json({
+    success: false,
+    message: 'Invalid credentials'
+  });
+}
 
-    // Check if user is active
-    if (user.status !== UserStatus.ACTIVE) {
-      return res.status(401).json({
-        success: false,
-        error: 'Account is not active. Please contact support.',
-      });
-    }
+if (user.status !== UserStatus.ACTIVE) {
+  return res.status(401).json({
+    success: false,
+    message: 'Account is not active. Please contact support.'
+  });
+}
+
 
     // Verify password
     const isPasswordValid = await user.matchPassword(password);
@@ -312,6 +313,48 @@ export const logoutAll = asyncHandler(
     });
   }
 );
+
+
+export const getProfile = asyncHandler(
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    if (!req.user) {
+      res.status(401).json({
+        success: false,
+        error: "Not Authorized",
+      });
+      return;
+    }
+
+    const profile = await User.findById(req.user._id)
+      .select(
+        "firstName lastName email phoneNumber profileImage studentProfile"
+      );
+
+    if (!profile) {
+      res.status(404).json({
+        success: false,
+        error: "User not found",
+      });
+      return;
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        id: profile._id,
+        firstName: profile.firstName,
+        lastName: profile.lastName,
+        email: profile.email,
+        phoneNumber: profile.phoneNumber,
+        profileImage: profile.profileImage,
+        githubProfile: profile.studentProfile?.githubProfile,
+        linkedinProfile: profile.studentProfile?.linkedinProfile,
+        portfolioUrl: profile.studentProfile?.portfolioUrl,
+      },
+    });
+  }
+);
+
 
 // ============================================
 // @desc    Update user profile

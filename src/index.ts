@@ -31,6 +31,9 @@ import progressRouter from './routes/progressRouter';
 import submissionRouter from './routes/submissionRouter';
 import programRouter from './routes/programRouter';
 import instructorRouter from './routes/instructorRouter';
+import { scholarshipRouter } from './routes/scholarshipRouter';
+import aiRouter from './routes/grogRouter';
+
 
 // Error handler middleware
 import { errorHandler } from './middlewares/errorHandler';
@@ -98,19 +101,19 @@ else app.use(morgan('combined'));
 // ============================================
 const generalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 50,
+  max: 100,
   message: 'Too many requests from this IP, try again later.',
   standardHeaders: true,
   legacyHeaders: false,
 });
 app.use('/api/', generalLimiter);
 
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10,
-  message: 'Too many authentication attempts, try again later.',
-  skipSuccessfulRequests: true,
-});
+// const authLimiter = rateLimit({
+//   windowMs: 15 * 60 * 1000,
+//   max: 10,
+//   message: 'Too many authentication attempts, try again later.',
+//   skipSuccessfulRequests: true,
+// });
 
 // Static files
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
@@ -197,13 +200,15 @@ app.get('/api', (_req: Request, res: Response) => {
       progress: '/api/v1/progress',
       program: '/api/v1/programs',
       submission: '/api/v1/submission',
-      instructor: '/api/v1/instructor',
+      instructors: '/api/v1/instructors',
+      scholarship: '/api/v1/scholarship',
+      aiAssistant: "/api/v1/aiAssistant",
     },
   });
 });
 
 // Mount Routes
-app.use('/api/v1/auth', authLimiter, authRoutes);
+app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/admin', adminRoutes);
 app.use('/api/v1/courses', courseRoutes);
 app.use('/api/v1/modules', moduleRoutes);
@@ -216,7 +221,9 @@ app.use('/api/v1/notifications', notificationRouter);
 app.use('/api/v1/progress', progressRouter);
 app.use('/api/v1/programs', programRouter);
 app.use('/api/v1/submission', submissionRouter);
-app.use('/api/v1/instructor', instructorRouter);
+app.use('/api/v1/instructors', instructorRouter);
+app.use("/api/v1/scholarship", scholarshipRouter)
+app.use("/api/v1/aiAssistant", aiRouter)
 
 // Error Handling
 app.use(notFound);

@@ -109,6 +109,94 @@ return res.status(200).json({
 // COURSE MANAGEMENT
 // ============================================
 
+
+// @desc    Create a new course by instructor
+// @route   POST /api/v1/instructors/courses
+// @access  Instructor only
+export const createInstructorCourse = asyncHandler(
+  async (req: AuthRequest, res: Response) => {
+    if (!req.user) {
+      return res.status(401).json({ success: false, error: 'Not authorized' });
+    }
+
+    const instructor = await User.findById(req.user._id);
+    if (!instructor || instructor.role !== UserRole.INSTRUCTOR) {
+      return res.status(403).json({ success: false, error: 'Instructor role required' });
+    }
+
+    const {
+      title,
+      description,
+      slug,
+      program,
+      targetAudience,
+      estimatedHours,
+      order,
+      objectives,
+      prerequisites,
+    } = req.body;
+
+    if (!title || !description || !program || !slug) {
+      return res.status(400).json({
+        success: false,
+        error: 'Title, description, slug, and program are required',
+      });
+    }
+
+    // Parse JSON fields safely (FormData sends strings)
+    const parsedObjectives =
+      typeof objectives === 'string' ? JSON.parse(objectives) : objectives || [];
+
+    const parsedPrerequisites =
+      typeof prerequisites === 'string' ? JSON.parse(prerequisites) : prerequisites || [];
+
+    let coverImage: string | undefined;
+
+    // Handle cover image upload
+    if (req.file) {
+      const upload = await CloudinaryHelper.uploadFile(
+        req.file.path,
+        'image',
+        'courses/covers'
+      );
+
+      coverImage = upload.secure_url;
+
+      // Remove temp file
+      await fs.unlink(req.file.path).catch(() => {});
+    }
+
+    const course = await Course.create({
+      title: title.trim(),
+      description: description.trim(),
+      slug: slug.trim(),
+      program,
+      targetAudience: targetAudience?.trim(),
+      estimatedHours: estimatedHours ? Number(estimatedHours) : undefined,
+      order: order ? Number(order) : 1,
+      objectives: parsedObjectives,
+      prerequisites: parsedPrerequisites,
+      coverImage,
+      instructor: req.user._id,
+      createdBy: req.user._id,
+      approvalStatus: 'pending',
+      isPublished: false,
+    });
+
+    // Attach course to instructor profile
+    instructor.instructorProfile ??= { bio: '', linkedinProfile: '', coursesTaught: [] };
+    instructor.instructorProfile.coursesTaught?.push(course._id);
+    await instructor.save();
+
+    return res.status(201).json({
+      success: true,
+      message: 'Course created successfully and pending approval',
+      data: course,
+    });
+  }
+);
+
+
 // @desc    Get all courses taught by instructor
 // @route   GET /api/v1/instructors/courses
 // @access  Instructor only

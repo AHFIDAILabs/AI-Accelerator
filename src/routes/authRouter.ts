@@ -15,6 +15,7 @@ import {
   forgotPassword,
   resetPassword,
   verifyEmail,
+  getProfile,
 } from '../controllers/authController';
 import { protect } from '../middlewares/auth';
 import { userValidation } from '../middlewares/validation';
@@ -77,6 +78,7 @@ authRouter.get(
   verifyEmail
 );
 
+
 // ============================================
 // PROTECTED ROUTES (require authentication)
 // ============================================
@@ -84,6 +86,11 @@ authRouter.use(protect); // All routes below are protected
 
 // Get current user
 authRouter.get('/me', getMe);
+
+// Get profile
+authRouter.get(
+  '/profile', getProfile
+)
 
 // Logout
 authRouter.post('/logout', logout);
