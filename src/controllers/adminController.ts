@@ -6,7 +6,7 @@ import mongoose from 'mongoose';
 import { Program } from '../models/program';
 import { Course } from '../models/Course';
 import { User, UserRole, UserStatus } from '../models/user';
-import { Enrollment } from '../models/Enrollment';
+import { Enrollment, EnrollmentStatus } from '../models/Enrollment';
 import { Progress } from '../models/ProgressTrack';
 import { AuthRequest } from '../middlewares/auth';
 import { asyncHandler } from '../middlewares/asyncHandler';
@@ -16,6 +16,8 @@ import { getIo } from '../config/socket';
 import { NotificationType } from '../models/Notification';
 import { Certificate } from '../models/Certificate';
 import { CloudinaryHelper } from '../utils/cloudinaryHelper';
+import { Module } from '../models/Module';
+import { Lesson } from '../models/Lesson';
 
 
 // ============================================
@@ -508,10 +510,18 @@ export const getDashboardStats = asyncHandler(
 // @access  Admin only
 export const bulkEnrollStudents = asyncHandler(
   async (req: AuthRequest, res: Response) => {
-    const { studentIds, courseId, cohort } = req.body;
+    const { studentIds, programId, cohort } = req.body; // Changed from courseId to programId
     const io = getIo();
-    const course = await Course.findById(courseId);
-    if (!course) return res.status(404).json({ success: false, error: 'Course not found' });
+    
+    // Validate program instead of course
+    const program = await Program.findById(programId).populate('courses');
+    if (!program) {
+      return res.status(404).json({ success: false, error: 'Program not found' });
+    }
+
+    if (!program.isPublished) {
+      return res.status(400).json({ success: false, error: 'Program is not published' });
+    }
 
     const enrollments = [];
     const errors = [];
@@ -520,57 +530,143 @@ export const bulkEnrollStudents = asyncHandler(
       try {
         const student = await User.findById(studentId);
         if (!student || student.role !== UserRole.STUDENT) {
-          errors.push({ studentId, error: 'Student not found or invalid role' });
+          errors.push({ 
+            studentId, 
+            error: 'Student not found or invalid role',
+            email: student?.email || 'N/A'
+          });
           continue;
         }
 
-        const existingEnrollment = await Enrollment.findOne({ studentId, courseId });
+        // Check if already enrolled in this PROGRAM
+        const existingEnrollment = await Enrollment.findOne({ 
+          studentId, 
+          program: programId 
+        });
+        
         if (existingEnrollment) {
-          errors.push({ studentId, error: 'Already enrolled' });
+          errors.push({ 
+            studentId, 
+            error: 'Already enrolled in this program',
+            email: student.email
+          });
           continue;
         }
 
+        // Check enrollment limit
+        if (program.enrollmentLimit) {
+          const currentEnrollments = await Enrollment.countDocuments({ 
+            program: programId, 
+            status: { $in: [EnrollmentStatus.PENDING, EnrollmentStatus.ACTIVE] }
+          });
+          
+          if (currentEnrollments >= program.enrollmentLimit) {
+            errors.push({ 
+              studentId, 
+              error: 'Program enrollment limit reached',
+              email: student.email
+            });
+            continue;
+          }
+        }
+
+        // Initialize courses progress for all courses in program
+        const coursesProgress = await Promise.all(
+          program.courses.map(async (courseId) => {
+            const course = await Course.findById(courseId);
+            if (!course) return null;
+
+            const modules = await Module.find({ course: courseId });
+            const moduleIds = modules.map(m => m._id);
+            const totalLessons = await Lesson.countDocuments({ 
+              module: { $in: moduleIds } 
+            });
+
+            return {
+              course: courseId,
+              courseId: courseId, // For compatibility
+              status: EnrollmentStatus.PENDING,
+              lessonsCompleted: 0,
+              totalLessons
+            };
+          })
+        );
+
+        const validCoursesProgress = coursesProgress.filter(cp => cp !== null);
+
+        // Create enrollment with program reference
         const enrollment = await Enrollment.create({
           studentId,
-          courseId,
+          program: programId,
+          status: EnrollmentStatus.ACTIVE,
           cohort: cohort || student.studentProfile?.cohort,
-          status: 'active',
+          notes: `Bulk enrolled by admin`,
+          coursesProgress: validCoursesProgress
         });
 
-        await Progress.create({ studentId, courseId, modules: [], overallProgress: 0 });
-        enrollments.push(enrollment);
-        if (typeof course.currentEnrollment === 'number') {
-          course.currentEnrollment += 1;
-        } else {
-          course.currentEnrollment = 1;
-        }
+        // Create program-level progress tracker
+        await Progress.create({
+          studentId,
+          programId,
+          modules: [],
+          overallProgress: 0,
+          completedLessons: 0,
+          totalLessons: validCoursesProgress.reduce((sum, cp) => sum + cp.totalLessons, 0),
+          completedAssessments: 0,
+          totalAssessments: 0,
+          averageScore: 0,
+          totalTimeSpent: 0,
+          completedCourses: 0,
+          totalCourses: program.courses.length,
+          enrolledAt: new Date()
+        });
 
-        // Notify each student about enrollment
+        enrollments.push({
+          enrollmentId: enrollment._id,
+          studentId: student._id,
+          studentName: `${student.firstName} ${student.lastName}`,
+          studentEmail: student.email
+        });
+
+        // Notify student about program enrollment
         const notification = await pushNotification({
           userId: student._id,
           type: NotificationType.COURSE_UPDATE,
-          title: 'Course Enrollment',
-          message: `You have been enrolled in ${course.title}`,
-          relatedId: course._id,
-          relatedModel: 'Course',
+          title: 'Program Enrollment',
+          message: `You have been enrolled in ${program.title}`,
+          relatedId: program._id,
+          relatedModel: 'Course', // You might want to change this to 'Program'
         });
-        io.to(student._id.toString()).emit('notification', notification);
+        
+        io.to(student._id.toString()).emit('notification', {
+          type: NotificationType.COURSE_UPDATE,
+          title: 'Successfully Enrolled',
+          message: `Welcome to ${program.title}! You now have access to ${program.courses.length} courses.`,
+          programId: program._id,
+          timestamp: new Date(),
+        });
 
       } catch (error: any) {
-        errors.push({ studentId, error: error.message });
+        errors.push({ 
+          studentId, 
+          error: error.message,
+          email: 'Error fetching email'
+        });
       }
     }
 
-    await course.save();
-
-   return res.status(200).json({
+    return res.status(200).json({
       success: true,
-      message: `Successfully enrolled ${enrollments.length} students`,
-      data: { enrolled: enrollments.length, failed: errors.length, enrollments, errors },
+      message: `Bulk enrollment completed: ${enrollments.length} successful, ${errors.length} failed`,
+      data: { 
+        enrolled: enrollments.length, 
+        failed: errors.length, 
+        enrollments, 
+        errors 
+      },
     });
   }
 );
-
 
 // @desc    Bulk update user status
 // @route   PATCH /api/admin/bulk/status
@@ -831,3 +927,53 @@ export const getProgramProgress = asyncHandler(async (req: AuthRequest, res: Res
     },
   });
 });
+
+
+// @desc    Get course by ID (Admin) - Full details with populated references
+// @route   GET /api/v1/admin/courses/:id
+// @access  Admin only
+export const getAdminCourseById = asyncHandler(
+  async (req: AuthRequest, res: Response) => {
+    const course = await Course.findById(req.params.id)
+      .populate('program', 'title description slug')
+      .populate('instructor', 'firstName lastName email profileImage')
+      .populate('createdBy', 'firstName lastName email profileImage')
+      .populate({
+        path: 'modules',
+        options: { sort: { order: 1 } },
+        populate: {
+          path: 'lessons',
+          options: { sort: { order: 1 } },
+          select: 'title type order estimatedMinutes isPublished description'
+        }
+      });
+
+    if (!course) {
+      return res.status(404).json({
+        success: false,
+        error: 'Course not found'
+      });
+    }
+
+    // Calculate stats from populated modules
+    const modules = course.modules || [];
+    const stats = {
+      totalModules: modules.length,
+      totalLessons: modules.reduce((sum: number, m: any) => 
+        sum + (m.lessons?.length || 0), 0),
+      totalDuration: modules.reduce((sum: number, m: any) => {
+        const moduleDuration = m.lessons?.reduce((lessonSum: number, lesson: any) => 
+          lessonSum + (lesson.estimatedMinutes || 0), 0) || 0;
+        return sum + moduleDuration;
+      }, 0)
+    };
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        ...course.toObject(),
+        stats
+      }
+    });
+  }
+);

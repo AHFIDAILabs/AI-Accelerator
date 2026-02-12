@@ -8,6 +8,7 @@ export interface IModule extends Document {
   title: string;
   description: string;
   learningObjectives: string[];
+  weekNumber?: number;
 
   sequenceLabel?: string;      // "Week 1", "Unit 2"
   estimatedMinutes?: number;
@@ -50,6 +51,8 @@ const moduleSchema = new Schema<IModule>(
     type: String,
     required: true
   },
+
+  weekNumber: Number,
 
   learningObjectives: [{ type: String }],
 

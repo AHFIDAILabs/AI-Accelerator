@@ -78,26 +78,27 @@ export const enrollStudent = asyncHandler(async (req: AuthRequest, res: Response
   }
 
   // Initialize courses progress for all courses in program
-  const coursesProgress = await Promise.all(
-    program.courses.map(async (courseId) => {
-      const course = await Course.findById(courseId);
-      if (!course) return null;
+// In your enrollment creation code:
+const coursesProgress = await Promise.all(
+  program.courses.map(async (courseId) => {
+    const course = await Course.findById(courseId);
+    if (!course) return null;
 
-      // Count total lessons in course
-      const modules = await Module.find({ course: courseId });
-      const moduleIds = modules.map(m => m._id);
-      const totalLessons = await Lesson.countDocuments({ module: { $in: moduleIds } });
+    const modules = await Module.find({ course: courseId });
+    const moduleIds = modules.map(m => m._id);
+    const totalLessons = await Lesson.countDocuments({ module: { $in: moduleIds } });
 
-      return {
-        course: courseId,
-        status: EnrollmentStatus.PENDING,
-        lessonsCompleted: 0,
-        totalLessons
-      };
-    })
-  );
+    return {
+      course: courseId,
+      courseId: courseId, // Add this for compatibility
+      status: EnrollmentStatus.PENDING,
+      lessonsCompleted: 0,
+      totalLessons
+    };
+  })
+);
 
-  const validCoursesProgress = coursesProgress.filter(cp => cp !== null);
+const validCoursesProgress = coursesProgress.filter(cp => cp !== null);
 
   // Create enrollment
   const enrollment = await Enrollment.create({
@@ -241,25 +242,28 @@ export const bulkEnrollStudentsInProgram = asyncHandler(async (req: AuthRequest,
       }
 
       // Initialize courses progress for all courses in program
-      const coursesProgress = await Promise.all(
-        program.courses.map(async (courseId) => {
-          const course = await Course.findById(courseId);
-          if (!course) return null;
+    // In your enrollment creation code:
+const coursesProgress = await Promise.all(
+  program.courses.map(async (courseId) => {
+    const course = await Course.findById(courseId);
+    if (!course) return null;
 
-          const modules = await Module.find({ course: courseId });
-          const moduleIds = modules.map(m => m._id);
-          const totalLessons = await Lesson.countDocuments({ module: { $in: moduleIds } });
+    const modules = await Module.find({ course: courseId });
+    const moduleIds = modules.map(m => m._id);
+    const totalLessons = await Lesson.countDocuments({ module: { $in: moduleIds } });
 
-          return {
-            course: courseId,
-            status: EnrollmentStatus.PENDING,
-            lessonsCompleted: 0,
-            totalLessons
-          };
-        })
-      );
+    return {
+      course: courseId,
+      courseId: courseId, // Add this for compatibility
+      status: EnrollmentStatus.PENDING,
+      lessonsCompleted: 0,
+      totalLessons
+    };
+  })
+);
 
-      const validCoursesProgress = coursesProgress.filter(cp => cp !== null);
+const validCoursesProgress = coursesProgress.filter(cp => cp !== null);
+
 
       // Create enrollment
       const enrollment = await Enrollment.create({

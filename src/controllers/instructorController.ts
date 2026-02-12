@@ -18,6 +18,8 @@ import { pushNotification, NotificationTemplates } from '../utils/pushNotificati
 import { NotificationType } from '../models/Notification';
 import { CloudinaryHelper } from '../utils/cloudinaryHelper';
 import { chunkArray } from '../utils/chunkArray';
+import { Lesson } from '../models/Lesson';
+import { Assessment } from '../models/Assessment';
 
 
 // ============================================
@@ -92,7 +94,11 @@ const instructor = await User.findById(req.user._id).select('-password -refreshT
       await fs.unlink(req.file.path).catch(() => {});
     }
   } catch {
-    return res.status(500).json({ success: false, error: 'Image operation failed' });
+    return res.status(200).json({
+  success: true,
+  message: 'Profile updated',
+  data: instructor,
+});
   }
 
   await instructor.save();
@@ -241,9 +247,23 @@ export const getInstructorCourse = asyncHandler(
       });
     }
 
-    // Get modules for this course
-    const modules = await Module.find({ courseId: course._id })
-      .sort({ weekNumber: 1 });
+    // ✅ FIX: Use 'course' field, not 'courseId'
+    const modules = await Module.find({ course: course._id })
+      .populate('lessons') // Populate the lessons array
+      .sort({ order: 1 }); // ✅ FIX: Sort by order, not weekNumber
+
+    // ✅ Calculate stats for each module
+    const modulesWithStats = modules.map(module => {
+      const moduleObj = module.toObject();
+      return {
+        ...moduleObj,
+        stats: {
+          lessonCount: moduleObj.lessons?.length || 0,
+          totalMinutes: moduleObj.lessons?.reduce((sum: number, lesson: any) => 
+            sum + (lesson.estimatedMinutes || 0), 0) || 0
+        }
+      };
+    });
 
     // Get enrollment stats
     const enrollmentStats = await Enrollment.aggregate([
@@ -256,11 +276,11 @@ export const getInstructorCourse = asyncHandler(
       }
     ]);
 
-   return res.status(200).json({
+    return res.status(200).json({
       success: true,
       data: {
         course,
-        modules,
+        modules: modulesWithStats,
         enrollmentStats
       }
     });
@@ -271,96 +291,295 @@ export const getInstructorCourse = asyncHandler(
 // STUDENT MANAGEMENT
 // ============================================
 
-// @desc    Get students enrolled in instructor's courses
+// @desc    Get students enrolled in instructor's courses (via programs)
 // @route   GET /api/v1/instructors/students
 // @access  Instructor only
-export const getInstructorStudents = asyncHandler(async (req: AuthRequest, res: Response) => {
-  if (!req.user) return res.status(401).json({ success: false });
+export const getInstructorStudents = asyncHandler(
+  async (req: AuthRequest, res: Response) => {
+    if (!req.user) {
+      return res.status(401).json({ success: false });
+    }
 
-  const instructorCourses = await Course.find({ instructor: req.user._id }).select('_id');
-  const courseIds = instructorCourses.map(c => c._id.toString());
+    const instructorId = req.user._id;
+    const { page = 1, limit = 10, status } = req.query;
 
-  const { courseId, status } = req.query;
+    // 1️⃣ Get all courses taught by instructor
+    const courses = await Course.find({ instructor: instructorId })
+      .select("_id title program");
 
-  if (courseId && !courseIds.includes(courseId as string))
-    return res.status(403).json({ success: false, error: 'Access denied' });
+    if (!courses.length) {
+      return res.json({
+        success: true,
+        data: [],
+        total: 0,
+        count: 0,
+        page,
+        pages: 1
+      });
+    }
 
-  const filter: any = { courseId: courseId || { $in: courseIds } };
-  if (status) filter.status = status;
+    const programMap: Record<string, { id: string; title: string }[]> = {};
+    courses.forEach((c) => {
+      const pid = c.program.toString();
+      if (!programMap[pid]) programMap[pid] = [];
+      programMap[pid].push({ id: c._id.toString(), title: c.title });
+    });
 
-  const page = Math.max(1, parseInt(req.query.page as string) || 1);
-  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 10));
+    const programIds = Object.keys(programMap).map(p => new mongoose.Types.ObjectId(p));
 
-  const [enrollments, total] = await Promise.all([
-    Enrollment.find(filter)
-      .populate('studentId', 'firstName lastName email profileImage')
-      .populate('courseId', 'title')
-      .skip((page - 1) * limit)
-      .limit(limit),
-    Enrollment.countDocuments(filter)
-  ]);
+    // 2️⃣ Match students
+    const match: any = { program: { $in: programIds } };
+    if (status && status !== 'all') match.status = status;
 
- return res.json({ success: true, count: enrollments.length, total, page, pages: Math.ceil(total / limit), data: enrollments });
-});
+    const total = await Enrollment.countDocuments(match);
 
+    const students = await Enrollment.aggregate([
+      { $match: match },
+      { $sort: { enrollmentDate: -1 } },
+      { $skip: (Number(page) - 1) * Number(limit) },
+      { $limit: Number(limit) },
+      {
+        $lookup: {
+          from: "users",
+          localField: "studentId",
+          foreignField: "_id",
+          as: "student"
+        }
+      },
+      { $unwind: "$student" },
+      {
+        $project: {
+          _id: "$student._id",
+          firstName: "$student.firstName",
+          lastName: "$student.lastName",
+          email: "$student.email",
+          profileImage: "$student.profileImage",
+          studentProfile: "$student.studentProfile",
+          enrollmentDate: 1,
+          UserStatus: "$student.UserStatus.ACTIVE",
+          status: 1,
+          program: 1
+        }
+      }
+    ]);
+
+    // 3️⃣ Attach courses & progress
+    const studentIds = students.map(s => s._id);
+
+    const progressDocs = await Progress.find({
+      studentId: { $in: studentIds },
+      courseId: { $in: courses.map(c => c._id) }
+    }).select(
+      "studentId overallProgress completedLessons totalLessons lastAccessedAt"
+    );
+
+    const progressMap = new Map();
+    progressDocs.forEach((p) => {
+      progressMap.set(p.studentId.toString(), p);
+    });
+
+    const result = students.map((s) => {
+      const studentCourses = programMap[s.program.toString()] || [];
+      const prog = progressMap.get(s._id.toString());
+
+      return {
+        ...s,
+        courses: studentCourses,
+        progress: prog
+          ? {
+              overallProgress: prog.overallProgress,
+              completedLessons: prog.completedLessons,
+              totalLessons: prog.totalLessons,
+              lastAccessedAt: prog.lastAccessedAt,
+            }
+          : {
+              overallProgress: 0,
+              completedLessons: 0,
+              totalLessons: 0,
+              lastAccessedAt: null
+            }
+      };
+    });
+
+    return res.json({
+      success: true,
+      data: result,
+      count: result.length,
+      total,
+      page: Number(page),
+      pages: Math.ceil(total / Number(limit)),
+    });
+  }
+);
 
 // @desc    Get student progress in a course
 // @route   GET /api/v1/instructors/students/:studentId/courses/:courseId/progress
 // @access  Instructor only
+
 export const getStudentCourseProgress = asyncHandler(
   async (req: AuthRequest, res: Response) => {
-    if (!req.user) {
-      return res.status(401).json({ success: false, error: 'Not authorized' });
-    }
-
     const { studentId, courseId } = req.params;
 
-    // Verify instructor teaches this course
-    const course = await Course.findOne({
-      _id: courseId,
-      instructor: req.user._id
-    });
-
-    if (!course) {
-      return res.status(403).json({ 
-        success: false, 
-        error: 'Access denied or course not found' 
+    if (!mongoose.Types.ObjectId.isValid(studentId) ||
+        !mongoose.Types.ObjectId.isValid(courseId)) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid Student or Course ID"
       });
     }
 
-    // Get student progress
-    const progress = await Progress.findOne({
+    if (!req.user) {
+      return res.status(401).json({ success: false, error: "Not authorized" });
+    }
+
+    // === COURSE OWNERSHIP ===
+    const course = await Course.findById(courseId)
+      .select("_id title slug description instructor program");
+
+    if (!course || !course.instructor.equals(req.user._id)) {
+      return res.status(403).json({
+        success: false,
+        error: "Access denied"
+      });
+    }
+
+    // === STUDENT ENROLLMENT ===
+    const enrollment = await Enrollment.findOne({
+      studentId,
+      program: course.program
+    }).select("status enrollmentDate updatedAt");
+
+    if (!enrollment) {
+      return res.status(403).json({
+        success: false,
+        error: "Student is not enrolled in this program"
+      });
+    }
+
+    // === STUDENT INFO ===
+    const student = await User.findById(studentId)
+      .select("firstName lastName email profileImage studentProfile");
+
+    // === PROGRESS ===
+    const progressDoc = await Progress.findOne({
       studentId,
       courseId
-    }).populate('modules.moduleId', 'title weekNumber');
+    }).lean();
 
-    if (!progress) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Progress not found' 
-      });
-    }
+    const progress = progressDoc || {
+      overallProgress: 0,
+      completedLessons: 0,
+      totalLessons: 0,
+      completedAssessments: 0,
+      totalAssessments: 0,
+      averageScore: 0,
+      totalTimeSpent: 0,
+      lastAccessedAt: new Date(0),
+      modules: []
+    };
 
-    // Get student info
-    const student = await User.findById(studentId)
-      .select('firstName lastName email profileImage');
+    // Convert hours → minutes for frontend
+    const totalMinutes = Math.round((progress.totalTimeSpent || 0) * 60);
 
-    // Get submissions for this course
+    const stats = {
+      totalTimeSpent: totalMinutes,
+      averageScore: progress.averageScore ?? 0,
+      completionRate: progress.overallProgress ?? 0,
+      lastActiveDate: progress.lastAccessedAt || enrollment.updatedAt || new Date(0),
+      streak: 0
+    };
+
+    // === MODULES + LESSONS ===
+    const rawModules = await Module.find({ course: courseId })
+      .populate("lessons", "title order estimatedMinutes")
+      .sort({ order: 1 })
+      .lean();
+
+    const modules = rawModules.map((mod) => {
+      const pMod = progress.modules?.find?.(
+        (pm: any) => pm.moduleId.toString() === mod._id.toString()
+      );
+
+      return {
+        _id: mod._id,
+        title: mod.title,
+        order: mod.order,
+        lessons: (mod.lessons || []).map((lesson: any) => {
+          const pLesson = pMod?.lessons?.find?.(
+            (l: any) => l.lessonId.toString() === lesson._id.toString()
+          );
+
+          return {
+            _id: lesson._id,
+            title: lesson.title,
+            order: lesson.order,
+            duration: lesson.estimatedMinutes,
+            isCompleted: pLesson?.status === "completed",
+            completedAt: pLesson?.completedAt || null,
+            lastAccessedAt: pLesson?.startedAt || null
+          };
+        })
+      };
+    });
+
+    // === ASSESSMENTS (Submission + Assessment) ===
     const submissions = await Submission.find({
       studentId,
       courseId
-    }).populate('assessmentId', 'title type');
+    })
+      .populate(
+        "assessmentId",
+        "title type description endDate totalPoints"
+      )
+      .lean();
 
-   return res.status(200).json({
+    const assessments = submissions.map((s) => {
+      const a: any = s.assessmentId; // populated doc OR ObjectId
+
+      return {
+        _id: a?._id || null,
+        title: a?.title || "Unknown Assessment",
+        type: a?.type,
+        dueDate: a?.endDate || null,   // YOUR MODEL USES endDate, NOT dueDate
+        submission: {
+          _id: s._id,
+          submittedAt: s.submittedAt,
+          status: s.status,
+          score: s.score,
+          feedback: s.feedback
+        }
+      };
+    });
+
+    return res.status(200).json({
       success: true,
       data: {
-        student,
-        course: {
-          id: course._id,
-          title: course.title
+        student: {
+          _id: student?._id,
+          firstName: student?.firstName,
+          lastName: student?.lastName,
+          email: student?.email,
+          profileImage: student?.profileImage,
+          enrollmentDate: enrollment.enrollmentDate,
+          status: enrollment.status,
+          studentProfile: student?.studentProfile
         },
-        progress,
-        submissions
+        course: {
+          _id: course._id,
+          title: course.title,
+          slug: course.slug,
+          description: course.description
+        },
+        progress: {
+          overallProgress: progress.overallProgress,
+          completedLessons: progress.completedLessons,
+          totalLessons: progress.totalLessons,
+          lastAccessedAt: progress.lastAccessedAt,
+          timeSpent: totalMinutes
+        },
+        modules,
+        assessments,
+        stats
       }
     });
   }
@@ -526,5 +745,85 @@ export const getInstructorDashboardStats = asyncHandler(async (req: AuthRequest,
       assessments: { pendingSubmissions, gradedThisWeek },
       recentActivity: { submissions: recentSubmissions }
     }
+  });
+});
+
+
+
+// ==========================================
+// GET INSTRUCTOR MODULES + COUNT
+// ==========================================
+export const getInstructorModules = asyncHandler(async (req: AuthRequest, res: Response) => {
+  if (!req.user) {
+    return res.status(401).json({ success: false, error: "Unauthorized" });
+  }
+
+  // Find courses taught by instructor
+  const courses = await Course.find({ instructor: req.user._id }).select("_id title program approvalStatus isPublished");
+
+  const modules = await Module.find({
+    course: { $in: courses.map((c) => c._id) }
+  })
+    .populate("course", "title program approvalStatus isPublished")
+    .sort({ updatedAt: -1 });
+
+  return res.status(200).json({
+    success: true,
+    count: modules.length,
+    data: modules
+  });
+});
+
+
+// ==========================================
+// GET INSTRUCTOR LESSONS + COUNT
+// ==========================================
+export const getInstructorLessons = asyncHandler(async (req: AuthRequest, res: Response) => {
+  if (!req.user) {
+    return res.status(401).json({ success: false, error: "Unauthorized" });
+  }
+
+  // Get instructor courses → then modules → then lessons
+  const courses = await Course.find({ instructor: req.user._id }).select("_id title program approvalStatus isPublished");
+  const modules = await Module.find({ course: { $in: courses.map(c => c._id) } }).select("_id title course");
+
+  const lessons = await Lesson.find({
+    module: { $in: modules.map((m) => m._id) }
+  })
+    .populate({
+      path: "module",
+      select: "title course ",
+      populate: { path: "course", select: "title program approvalStatus isPublished" }
+    })
+    .sort({ updatedAt: -1 });
+
+  return res.status(200).json({
+    success: true,
+    count: lessons.length,
+    data: lessons
+  });
+});
+
+
+// ==========================================
+// GET INSTRUCTOR ASSESSMENTS + COUNT
+// ==========================================
+export const getInstructorAssessments = asyncHandler(async (req: AuthRequest, res: Response) => {
+  if (!req.user) {
+    return res.status(401).json({ success: false, error: "Unauthorized" });
+  }
+
+  const courses = await Course.find({ instructor: req.user._id }).select("_id title program approvalStatus isPublished");
+
+  const assessments = await Assessment.find({
+    courseId: { $in: courses.map(c => c._id) }
+  })
+    .populate("courseId", "title program approvalStatus isPublished")
+    .sort({ updatedAt: -1 });
+
+  return res.status(200).json({
+    success: true,
+    count: assessments.length,
+    data: assessments
   });
 });

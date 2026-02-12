@@ -202,20 +202,83 @@ export const deleteAssessment = asyncHandler(async (req: AuthRequest, res: Respo
 // ==============================
 // PUBLISH / UNPUBLISH ASSESSMENT
 // ==============================
-export const toggleAssessmentPublish = asyncHandler(async (req: AuthRequest, res: Response) => {
-  const assessment = await Assessment.findById(req.params.id);
-  if (!assessment) return res.status(404).json({ success: false, error: "Assessment not found" });
 
-  const course = await Course.findById(assessment.courseId);
-  if (req.user?.role === UserRole.INSTRUCTOR && course?.createdBy.toString() !== req.user._id.toString()) {
-    return res.status(403).json({ success: false, error: "Access denied" });
+// controllers/assessmentController.ts
+
+export const toggleAssessmentPublish = asyncHandler(async (req: AuthRequest, res: Response) => {
+  console.log('=== TOGGLE PUBLISH DEBUG ===');
+  console.log('Assessment ID:', req.params.id);
+  console.log('User:', req.user);
+  
+  const assessment = await Assessment.findById(req.params.id);
+  if (!assessment) {
+    return res.status(404).json({ success: false, error: "Assessment not found" });
   }
 
-  const wasPublished = assessment.isPublished;
+  console.log('Assessment found:', {
+    _id: assessment._id,
+    title: assessment.title,
+    courseId: assessment.courseId,
+    courseIdType: typeof assessment.courseId
+  });
+
+  // Extract course ID properly (handle both ObjectId and populated object)
+  const courseId = typeof assessment.courseId === 'object' 
+    ? (assessment.courseId as any)._id 
+    : assessment.courseId;
+
+  console.log('Extracted courseId:', courseId);
+
+  const course = await Course.findById(courseId);
+  if (!course) {
+    console.log('Course not found with ID:', courseId);
+    return res.status(404).json({ success: false, error: "Course not found" });
+  }
+
+  console.log('Course found:', {
+    _id: course._id,
+    title: course.title,
+    createdBy: course.createdBy,
+    createdByType: typeof course.createdBy
+  });
+
+  // Permission check - only for instructors
+  if (req.user?.role === UserRole.INSTRUCTOR) {
+    const userIdStr = req.user._id.toString();
+    const creatorIdStr = course.createdBy.toString();
+    
+    console.log('PERMISSION CHECK:', {
+      userRole: req.user.role,
+      userId: userIdStr,
+      courseCreator: creatorIdStr,
+      match: creatorIdStr === userIdStr,
+      comparison: `"${userIdStr}" === "${creatorIdStr}"`
+    });
+    
+    if (creatorIdStr !== userIdStr) {
+      console.log('❌ PERMISSION DENIED');
+      return res.status(403).json({ 
+        success: false, 
+        error: "You can only publish/unpublish assessments for courses you created" 
+      });
+    }
+    
+    console.log('✅ PERMISSION GRANTED');
+  }
+
+  // Toggle publish status
   assessment.isPublished = !assessment.isPublished;
   await assessment.save();
 
- return res.status(200).json({ success: true, message: `Assessment ${assessment.isPublished ? "published" : "unpublished"} successfully`, data: assessment });
+  // Populate before sending response
+  await assessment.populate('courseId moduleId lessonId', 'title');
+
+  console.log('=== PUBLISH SUCCESSFUL ===');
+  return res.status(200).json({ 
+    success: true, 
+    message: `Assessment ${assessment.isPublished ? "published" : "unpublished"} successfully`, 
+    data: assessment 
+  });
 });
 
 // ==============================

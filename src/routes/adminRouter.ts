@@ -38,6 +38,8 @@ import {
   updateProgram,
   deleteProgram,
   createProgram,
+  getAdminCourseById,
+  getProgramProgress
 } from '../controllers/adminController';
 
 import { protect } from '../middlewares/auth';
@@ -81,6 +83,7 @@ adminRouter.patch('/users/:id/demote-instructor', authorize(UserRole.ADMIN), dem
 // DASHBOARD (Admin Only)
 // ============================================
 adminRouter.get('/dashboard/stats', authorize(UserRole.ADMIN), getDashboardStats);
+adminRouter.get("/courses/:id", authorize(UserRole.ADMIN), getAdminCourseById)
 
 // ============================================
 // BULK OPERATIONS (Admin Only)

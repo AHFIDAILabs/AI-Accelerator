@@ -362,3 +362,15 @@ export const paginationValidation = [
     .isIn(['createdAt', '-createdAt', 'title', '-title', 'order', '-order'])
     .withMessage('Invalid sort parameter'),
 ];
+
+export const instructorStudentValidation = {
+  getProgress: [
+    param('studentId')
+      .isMongoId()
+      .withMessage('Invalid studentId'),
+
+    param('courseId')
+      .isMongoId()
+      .withMessage('Invalid courseId'),
+  ],
+};

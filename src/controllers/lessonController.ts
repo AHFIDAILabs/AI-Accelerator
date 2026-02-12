@@ -201,9 +201,11 @@ export const createLesson = asyncHandler(async (req: AuthRequest, res: Response)
     isPublished: false,
   });
 
-  await Module.findByIdAndUpdate(module, {
-  $push: { lessons: lesson._id }
-});
+// ✅ ADD THIS: Push lesson to module's lessons array
+  await Module.findByIdAndUpdate(
+    module._id,
+    { $push: { lessons: lesson._id } }
+  );
   console.log('Lesson created successfully:', lesson._id);
 
   res.status(201).json({
@@ -1085,3 +1087,64 @@ export const getLessonProgress = asyncHandler(async (req: AuthRequest, res: Resp
   });
 });
 
+// ==============================================
+// GET ALL LESSONS (INSTRUCTOR + ADMIN)
+// ==============================================
+export const getAllLessonsInstructor = asyncHandler(
+  async (req: AuthRequest, res: Response) => {
+    if (!req.user) {
+      return res.status(401).json({
+        success: false,
+        error: "Unauthorized",
+      });
+    }
+
+    // Only instructors and admins are allowed
+    if (!["admin", "instructor"].includes(req.user.role)) {
+      return res.status(403).json({
+        success: false,
+        error: "Access denied",
+      });
+    }
+
+    const {
+      page = "1",
+      limit = "20",
+      search,
+      type,
+      isPublished,
+      moduleId,
+    } = req.query;
+
+    // Build filter
+    const filter: any = {};
+    if (moduleId) filter.module = moduleId;
+    if (type) filter.type = type;
+    if (isPublished !== undefined)
+      filter.isPublished = isPublished === "true";
+
+    // Base query
+    let query = Lesson.find(filter)
+      .populate("module", "title course")
+      .sort({ updatedAt: -1 });
+
+    // Apply QueryHelper
+    const helper = new QueryHelper(query, req.query)
+      .search(["title", "description"])
+      .filter()
+      .sort()
+      .paginate();
+
+    const lessons = await helper.query;
+    const total = await Lesson.countDocuments(filter);
+
+    return res.status(200).json({
+      success: true,
+      data: lessons,
+      total,
+      count: lessons.length,
+      page: Number(page),
+      pages: Math.ceil(total / Number(limit)),
+    });
+  }
+);

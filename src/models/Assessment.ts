@@ -46,7 +46,7 @@ export interface IAssessment extends Document {
   isPublished: boolean;
   isRequiredForCompletion: boolean;
 
-  order: number;
+  order?: number;
 
   startDate?: Date;
   endDate?: Date;
@@ -92,7 +92,7 @@ const assessmentSchema = new Schema<IAssessment>(
     isPublished: { type: Boolean, default: false },
     isRequiredForCompletion: { type: Boolean, default: true },
 
-    order: { type: Number, required: true },
+    order: { type: Number },
 
     startDate: Date,
     endDate: Date

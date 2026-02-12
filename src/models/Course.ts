@@ -24,6 +24,8 @@ export interface ICourse extends Document {
   approvalStatus: 'pending' | 'approved' | 'rejected';
   createdAt: Date;
   updatedAt: Date;
+  // Virtual fields (populated at runtime)
+  modules?: any[];
 }
 
 const courseSchema = new Schema<ICourse>(
@@ -68,6 +70,7 @@ const courseSchema = new Schema<ICourse>(
       ref: "User",
       required: [true, "Facilitator is required"],
     },
+    
     description: {
       type: String,
       required: [true, "Description is required"],
@@ -166,6 +169,7 @@ courseSchema.index({ program: 1, order: 1 });
 courseSchema.index({ slug: 1 });
 courseSchema.index({ isPublished: 1, approvalStatus: 1 });
 courseSchema.index({ createdBy: 1 });
+courseSchema.index({ instructor: 1 });
 courseSchema.index({ title: 'text', description: 'text' });
 
 // =====================================================
@@ -216,7 +220,7 @@ courseSchema.pre('findOneAndDelete', async function(next) {
 // VIRTUALS
 // =====================================================
 
-// Virtual for modules (populated separately)
+// ✅ Virtual for modules (populated when needed)
 courseSchema.virtual('modules', {
   ref: 'Module',
   localField: '_id',
@@ -224,7 +228,7 @@ courseSchema.virtual('modules', {
   options: { sort: { order: 1 } }
 });
 
-// Virtual for enrollment count (can be populated from Enrollment model)
+// Virtual for enrollment count
 courseSchema.virtual('enrollmentCount', {
   ref: 'Enrollment',
   localField: '_id',
@@ -275,6 +279,7 @@ courseSchema.statics.getPublishedCourses = function(
   return query
     .populate('program', 'title slug description')
     .populate('createdBy', 'firstName lastName email')
+    .populate('instructor', 'firstName lastName email')
     .sort({ order: 1 });
 };
 

@@ -41,7 +41,7 @@ moduleRouter.use(protect);
 moduleRouter.get('/course/:courseId', getModulesByCourse);
 
 // Get module statistics (admin only)
-moduleRouter.get('/stats/overview', authorize(UserRole.ADMIN), getModuleStats);
+moduleRouter.get('/stats/overview', authorize(UserRole.ADMIN, UserRole.INSTRUCTOR), getModuleStats);
 
 // Reorder modules
 moduleRouter.put('/reorder', authorize(UserRole.INSTRUCTOR, UserRole.ADMIN), reorderModules);
@@ -77,6 +77,6 @@ moduleRouter.delete('/:id', authorize(UserRole.INSTRUCTOR, UserRole.ADMIN), dele
 // ============================================
 
 // Get all modules (admin only)
-moduleRouter.get('/', authorize(UserRole.ADMIN), getAllModulesAdmin);
+moduleRouter.get('/', authorize(UserRole.ADMIN, UserRole.INSTRUCTOR), getAllModulesAdmin);
 
 export default moduleRouter;

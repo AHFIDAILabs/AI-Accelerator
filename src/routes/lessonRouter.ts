@@ -14,6 +14,7 @@ import {
   lessonStats,
   reorderLessons,
   getPublishedLessons,
+  getAllLessonsInstructor
 } from '../controllers/lessonController';
 import { protect } from '../middlewares/auth';
 import { adminOnly, instructorAccess } from '../middlewares/adminAuth';
@@ -47,6 +48,9 @@ lessonRouter.get('/module/:moduleId', getLessonsByModule);
 
 // Get all lessons (admin)
 lessonRouter.get('/admin/all', adminOnly, getAllLessonsAdmin);
+
+// Get all lessons for instructor (can include unpublished)
+lessonRouter.get("/", instructorAccess, getAllLessonsInstructor);
 
 // Get lesson statistics
 lessonRouter.get('/stats', adminOnly, instructorAccess, lessonStats);
