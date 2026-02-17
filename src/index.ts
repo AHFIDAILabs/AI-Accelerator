@@ -97,23 +97,89 @@ if (process.env.NODE_ENV === 'development') app.use(morgan('dev'));
 else app.use(morgan('combined'));
 
 // ============================================
-// RATE LIMITERS (In-memory, no Redis)
+// ✅ IMPROVED RATE LIMITERS FOR DEVELOPMENT
 // ============================================
+const isDevelopment = process.env.NODE_ENV === 'development';
+
+// ✅ Skip rate limiting entirely in development for localhost
+const skipRateLimitInDev = (req: Request) => {
+  if (!isDevelopment) return false;
+  
+  const forwardedFor = req.headers['x-forwarded-for'];
+  const ip = forwardedFor 
+    ? (Array.isArray(forwardedFor) ? forwardedFor[0] : forwardedFor.split(',')[0])
+    : req.socket.remoteAddress;
+  
+  // Skip for localhost
+  if (ip === '::1' || ip === '127.0.0.1' || ip?.includes('localhost')) {
+    return true;
+  }
+  
+  return false;
+};
+
+// ✅ General API rate limiter - very lenient in dev
 const generalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100,
-  message: 'Too many requests from this IP, try again later.',
+  max: isDevelopment ? 10000 : 100, // 10k in dev, 100 in prod
+  message: {
+    success: false,
+    error: 'Too many requests from this IP, please try again later.',
+    retryAfter: '15 minutes'
+  },
   standardHeaders: true,
   legacyHeaders: false,
+  skip: skipRateLimitInDev, // Skip entirely for localhost in dev
+  // ✅ Don't block on headers issues
+  skipFailedRequests: isDevelopment,
+  handler: (req, res) => {
+    if (isDevelopment) {
+      console.warn('⚠️ Rate limit reached (dev mode):', req.path);
+    }
+    res.status(429).json({
+      success: false,
+      error: 'Too many requests, please try again later.',
+      retryAfter: '15 minutes'
+    });
+  }
 });
-app.use('/api/', generalLimiter);
 
-// const authLimiter = rateLimit({
-//   windowMs: 15 * 60 * 1000,
-//   max: 10,
-//   message: 'Too many authentication attempts, try again later.',
-//   skipSuccessfulRequests: true,
-// });
+// ✅ Apply general limiter only to non-auth routes in dev
+if (isDevelopment) {
+  // In dev, only apply to routes that aren't auth-related
+  app.use('/api/v1/', (req, res, next) => {
+    if (req.path.includes('/auth/me') || req.path.includes('/auth/refresh')) {
+      return next(); // Skip rate limiting for auth checks
+    }
+    return generalLimiter(req, res, next);
+  });
+} else {
+  // In production, apply to all routes
+  app.use('/api/', generalLimiter);
+}
+
+// ✅ Auth-specific limiter - DISABLED in development
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: isDevelopment ? 10000 : 10, // Unlimited in dev, 10 in prod
+  message: {
+    success: false,
+    error: 'Too many authentication attempts, try again later.',
+    retryAfter: '15 minutes'
+  },
+  skipSuccessfulRequests: true,
+  skip: (req) => {
+    // ✅ Always skip in development
+    if (isDevelopment) return true;
+    
+    // ✅ Also skip for /auth/me and /auth/refresh even in production
+    if (req.path.includes('/auth/me') || req.path.includes('/auth/refresh')) {
+      return true;
+    }
+    
+    return false;
+  },
+});
 
 // Static files
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
@@ -156,15 +222,43 @@ app.use((req, _res, next) => {
   next();
 });
 
-
+// ============================================
+// ✅ IMPROVED ERROR HANDLER
+// ============================================
 app.use((err: any, req: any, res: any, next: any) => {
-  console.error(err);
+  // ✅ More detailed logging in development
+  if (isDevelopment) {
+    console.error('❌ Error Handler:', {
+      message: err.message,
+      status: err.status,
+      path: req.path,
+      method: req.method,
+      stack: err.stack?.split('\n').slice(0, 3), // First 3 lines of stack
+    });
+  } else {
+    console.error('❌ Error Handler:', {
+      message: err.message,
+      status: err.status,
+      path: req.path,
+      method: req.method,
+    });
+  }
+
+  // ✅ Don't expose internal errors in production
+  const message = isDevelopment 
+    ? err.message 
+    : 'Server error';
 
   res.status(err.status || 500).json({
     success: false,
-    error: err.message || "Server error"
+    error: message,
+    ...(isDevelopment && { 
+      stack: err.stack,
+      details: err.details || null 
+    })
   });
 });
+
 // ============================================
 // API ROUTES
 // ============================================
@@ -199,7 +293,7 @@ app.get('/api', (_req: Request, res: Response) => {
       notifications: '/api/v1/notifications',
       progress: '/api/v1/progress',
       program: '/api/v1/programs',
-      submission: '/api/v1/submission',
+      submission: '/api/v1/submissions',
       instructors: '/api/v1/instructors',
       scholarship: '/api/v1/scholarship',
       aiAssistant: "/api/v1/aiAssistant",
@@ -208,7 +302,7 @@ app.get('/api', (_req: Request, res: Response) => {
 });
 
 // Mount Routes
-app.use('/api/v1/auth', authRoutes);
+app.use('/api/v1/auth', authRoutes); // No auth limiter applied
 app.use('/api/v1/admin', adminRoutes);
 app.use('/api/v1/courses', courseRoutes);
 app.use('/api/v1/modules', moduleRoutes);
@@ -220,7 +314,7 @@ app.use('/api/v1/certificates', certificateRoutes);
 app.use('/api/v1/notifications', notificationRouter);
 app.use('/api/v1/progress', progressRouter);
 app.use('/api/v1/programs', programRouter);
-app.use('/api/v1/submission', submissionRouter);
+app.use('/api/v1/submissions', submissionRouter);
 app.use('/api/v1/instructors', instructorRouter);
 app.use("/api/v1/scholarship", scholarshipRouter)
 app.use("/api/v1/aiAssistant", aiRouter)
@@ -290,6 +384,10 @@ server.listen(PORT, () => {
     `🚀 Server running in ${process.env.NODE_ENV || 'development'} mode`
   );
   console.log(`🚀 Listening on port ${PORT}`);
+  
+  if (isDevelopment) {
+    console.log('🔥 Hot reload friendly - Rate limiting disabled for localhost');
+  }
 });
 
 // Export app

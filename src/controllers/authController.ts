@@ -21,7 +21,6 @@ import {
 import emailService from '../utils/emailService';
 import { asyncHandler } from '../middlewares/asyncHandler';
 import { CloudinaryHelper } from '../utils/cloudinaryHelper';
-import { apiLimiter } from '../middlewares/rateLimiter';
 
 // ============================================
 // @desc    Register new user

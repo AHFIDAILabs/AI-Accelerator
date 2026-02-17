@@ -8,13 +8,13 @@ studentId: string, courseId?: string, res?: unknown): Promise<void> => {
 
   const enrollment = await Enrollment.findOne({
     studentId,
-    "coursesProgress.course": courseId
+    "coursesProgress.courseId": courseId
   });
 
   if (!enrollment) return;
 
   const courseProgress = enrollment.coursesProgress.find(
-    c => c.course.toString() === courseId
+    c => c.courseId.toString() === courseId
   );
 
   if (!courseProgress) return;

@@ -99,7 +99,7 @@ courseRouter.delete(
 courseRouter.patch(
   '/admin/:id/publish',
   protect,
-  authorize(UserRole.ADMIN),
+  authorize(UserRole.ADMIN, UserRole.INSTRUCTOR),
   toggleCoursePublish
 );
 

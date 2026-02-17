@@ -1,80 +1,67 @@
-import  mongoose, { Document, Model, Schema } from 'mongoose';
+import mongoose, { Schema, Document, Model } from "mongoose";
 
 export interface IModule extends Document {
-  course: mongoose.Types.ObjectId;
-  lessons: mongoose.Types.ObjectId[];
-  order: number;
-
+  courseId: mongoose.Types.ObjectId;
   title: string;
   description: string;
-  learningObjectives: string[];
+  lessons: mongoose.Types.ObjectId[];
+
+  order: number;
   weekNumber?: number;
 
-  sequenceLabel?: string;      // "Week 1", "Unit 2"
+  learningObjectives: string[];
+  sequenceLabel?: string;
+
   estimatedMinutes?: number;
+  lessonCount: number;
 
-  type: 'core' | 'project' | 'assessment' | 'capstone';
-
+  type: "core" | "project" | "assessment" | "capstone";
   isPublished: boolean;
 
   createdAt: Date;
   updatedAt: Date;
 }
 
-
 const moduleSchema = new Schema<IModule>(
-{
-  course: {
-    type: Schema.Types.ObjectId,
-    ref: 'Course',
-    required: true,
-    index: true
+  {
+    courseId: {
+      type: Schema.Types.ObjectId,
+      ref: "Course",
+      required: true,
+      index: true
+    },
+
+    lessons: [
+      {
+        type: Schema.Types.ObjectId,
+        ref: "Lesson"
+      }
+    ],
+
+    title: { type: String, required: true },
+    description: { type: String, required: true },
+
+    order: { type: Number, required: true },
+
+    weekNumber: Number,
+    sequenceLabel: String,
+
+    learningObjectives: [String],
+
+    estimatedMinutes: Number,
+    lessonCount: { type: Number, default: 0 },
+
+    type: {
+      type: String,
+      enum: ["core", "project", "assessment", "capstone"],
+      default: "core"
+    },
+
+    isPublished: { type: Boolean, default: false }
   },
-
-  lessons: [{
-  type: Schema.Types.ObjectId,
-  ref: 'Lesson'
-}],
-
-  order: {
-    type: Number,
-    required: true
-  },
-
-  title: {
-    type: String,
-    required: true,
-    trim: true
-  },
-
-  description: {
-    type: String,
-    required: true
-  },
-
-  weekNumber: Number,
-
-  learningObjectives: [{ type: String }],
-
-  sequenceLabel: String,      // "Week 1", "Unit 2"
-  estimatedMinutes: Number,
-
-  type: {
-    type: String,
-    enum: ['core', 'project', 'assessment', 'capstone'],
-    default: 'core'
-  },
-
-  isPublished: {
-    type: Boolean,
-    default: false
-  }
-},
-{ timestamps: true }
+  { timestamps: true }
 );
 
-// Order unique per course
-moduleSchema.index({ course: 1, order: 1 }, { unique: true });
+moduleSchema.index({ courseId: 1, order: 1 }, { unique: true });
 
-
-export const Module: Model<IModule> = mongoose.model<IModule>('Module', moduleSchema);
+export const Module: Model<IModule> = mongoose.model("Module", moduleSchema);

@@ -1,7 +1,3 @@
-// ============================================
-// src/routes/submission.routes.ts
-// ============================================
-
 import express from "express";
 import { protect } from "../middlewares/auth";
 import { authorize } from "../middlewares/adminAuth";
@@ -17,11 +13,9 @@ import {
 
 const submissionRouter = express.Router();
 
-// ============================================
-// STUDENT ROUTES
-// ============================================
+// ---------------------- STUDENT ----------------------
 
-// Create submission
+// Submit assessment
 submissionRouter.post(
   "/", 
   protect, 
@@ -29,47 +23,52 @@ submissionRouter.post(
   createSubmission
 );
 
-// Get my submissions for an assessment
+// My submissions for one assessment
 submissionRouter.get(
-  "/assessments/:assessmentId/my-submissions",
+  "/assessment/:assessmentId/my-submissions",
   protect,
   authorize(UserRole.STUDENT),
   getMySubmissions
 );
 
-// Get single submission
+// Upload attachments
+submissionRouter.post(
+  "/upload",
+  protect,
+  authorize(UserRole.STUDENT),
+  /* upload handler here */
+);
+
+// View one submission (student or instructor)
 submissionRouter.get(
   "/:id",
   protect,
   getSubmission
 );
 
-// ============================================
-// ADMIN/INSTRUCTOR ROUTES
-// ============================================
+// ---------------- Instructor / Admin ----------------
+
+// All submissions for an assessment
+submissionRouter.get(
+  "/assessment/:assessmentId",
+  protect,
+  authorize(UserRole.INSTRUCTOR, UserRole.ADMIN),
+  getSubmissionsByAssessment);
+
+  // All submissions by a student (for instructors/admins)
+submissionRouter.get(
+  "/student/:studentId",
+  protect,
+  authorize(UserRole.INSTRUCTOR, UserRole.ADMIN),
+  getSubmissionsByStudent
+);
 
 // Grade submission
-submissionRouter.put(
-  "/grade/:submissionId",
+submissionRouter.post(
+  "/:id/grade",
   protect,
-  authorize(UserRole.ADMIN, UserRole.INSTRUCTOR),
+  authorize(UserRole.INSTRUCTOR, UserRole.ADMIN),
   gradeSubmission
-);
-
-// Get all submissions for an assessment
-submissionRouter.get(
-  "/assessments/:assessmentId",
-  protect,
-  authorize(UserRole.ADMIN, UserRole.INSTRUCTOR),
-  getSubmissionsByAssessment
-);
-
-// Get submissions by student
-submissionRouter.get(
-  "/students/:studentId",
-  protect,
-  authorize(UserRole.ADMIN, UserRole.INSTRUCTOR),
-  getSubmissionsByStudent
 );
 
 export default submissionRouter;

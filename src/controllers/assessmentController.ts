@@ -12,9 +12,10 @@ import { QueryHelper } from "../utils/queryHelper";
 import { getIo } from "../config/socket";
 import { pushNotification } from "../utils/pushNotification";
 import { User } from "../models/user";
-import { Enrollment } from "../models/Enrollment";
+import { Enrollment, EnrollmentStatus } from "../models/Enrollment";
 import { NotificationType } from "../models/Notification";
 import { chunkArray } from "../utils/chunkArray";
+import { Submission, SubmissionStatus } from "../models/Submission";
 
 
 // ==============================
@@ -36,18 +37,18 @@ export const createAssessment = asyncHandler(async (req: AuthRequest, res: Respo
     return res.status(403).json({ success: false, error: "Cannot add assessment to this course" });
   }
 
-  // Validate module
+  // Validate module belongs to course
   if (moduleId) {
-    const module = await Module.findById(moduleId);
-    if (!module || module.course.toString() !== courseId) {
+    const moduleDoc = await Module.findById(moduleId);
+    if (!moduleDoc || moduleDoc.courseId.toString() !== courseId) {
       return res.status(400).json({ success: false, error: "Invalid module" });
     }
   }
 
-  // Validate lesson
+  // Validate lesson belongs to module (if provided)
   if (lessonId) {
-    const lesson = await Lesson.findById(lessonId);
-    if (!lesson || (moduleId && lesson.module.toString() !== moduleId)) {
+    const lessonDoc = await Lesson.findById(lessonId);
+    if (!lessonDoc || (moduleId && lessonDoc.moduleId.toString() !== moduleId)) {
       return res.status(400).json({ success: false, error: "Invalid lesson" });
     }
   }
@@ -66,15 +67,15 @@ export const createAssessment = asyncHandler(async (req: AuthRequest, res: Respo
     // Notify admins
     const admins = await User.find({ role: UserRole.ADMIN });
     const io = getIo();
-   const notifications = admins.map(admin => ({
-  userId: admin._id,
-  type: NotificationType.COURSE_UPDATE,
-  title: "New Assessment Created",
-  message: `${req.user?.firstName} ${req.user?.lastName} created "${title}" for course "${course.title}"`,
-  relatedId: assessment[0]._id,
-  relatedModel: "Assessment" as const // <-- note 'as const'
-}));
 
+    const notifications = admins.map(admin => ({
+      userId: admin._id,
+      type: NotificationType.COURSE_UPDATE,
+      title: "New Assessment Created",
+      message: `${req.user?.firstName} ${req.user?.lastName} created "${title}" for course "${course.title}"`,
+      relatedId: assessment[0]._id,
+      relatedModel: "Assessment" as const
+    }));
 
     for (const batch of chunkArray(notifications, 100)) {
       await Promise.all(batch.map(n => pushNotification(n)));
@@ -84,7 +85,7 @@ export const createAssessment = asyncHandler(async (req: AuthRequest, res: Respo
     await session.commitTransaction();
     session.endSession();
 
-   return res.status(201).json({
+    return res.status(201).json({
       success: true,
       message: "Assessment created successfully (pending publication)",
       data: assessment[0]
@@ -112,7 +113,7 @@ export const getAllAssessmentsAdmin = asyncHandler(async (req: AuthRequest, res:
 // GET PUBLISHED ASSESSMENTS (STUDENT)
 // ==============================
 export const getPublishedAssessments = asyncHandler(async (req: AuthRequest, res: Response) => {
-  let filter: any = { isPublished: true };
+  const filter: any = { isPublished: true };
 
   if (req.user?.role === UserRole.STUDENT) {
     const enrollments = await Enrollment.find({ studentId: req.user._id }).select("coursesProgress");
@@ -125,21 +126,62 @@ export const getPublishedAssessments = asyncHandler(async (req: AuthRequest, res
   query = queryHelper.filter().search(["title", "description"]).sort().paginate().query;
   const assessments = await query;
 
- return res.status(200).json({ success: true, count: assessments.length, data: assessments });
+  // ✅ Attach latestSubmission for each assessment (students only)
+  if (req.user?.role === UserRole.STUDENT) {
+    const assessmentIds = assessments.map(a => a._id);
+
+    const submissions = await Submission.find({
+      assessmentId: { $in: assessmentIds },
+      studentId: req.user._id,
+      status: { $ne: SubmissionStatus.DRAFT },
+    })
+      .sort({ attemptNumber: -1 })
+      .select("assessmentId status score percentage attemptNumber submittedAt gradedAt feedback");
+
+    // Build map: assessmentId → latest submission (already sorted desc, first wins)
+    const submissionMap = new Map<string, any>();
+    for (const sub of submissions) {
+      const key = sub.assessmentId.toString();
+      if (!submissionMap.has(key)) submissionMap.set(key, sub);
+    }
+
+    const data = assessments.map(a => ({
+      ...a.toObject(),
+      latestSubmission: submissionMap.get(a._id.toString()) ?? null,
+    }));
+
+    return res.status(200).json({ success: true, count: data.length, data });
+  }
+
+  return res.status(200).json({ success: true, count: assessments.length, data: assessments });
 });
 
 // ==============================
 // GET SINGLE ASSESSMENT
 // ==============================
 export const getAssessmentById = asyncHandler(async (req: AuthRequest, res: Response) => {
-  const assessment = await Assessment.findById(req.params.id).populate("courseId moduleId lessonId", "title");
-  if (!assessment || (!assessment.isPublished && ![UserRole.ADMIN, UserRole.INSTRUCTOR].includes(req.user?.role!))) {
+  const assessment = await Assessment.findById(req.params.id)
+    .populate("courseId moduleId lessonId", "title");
+  if (!assessment) {
     return res.status(404).json({ success: false, error: "Assessment not found" });
   }
 
-  // Students must be enrolled
+  // If not published, only admin/instructor can view
+  if (!assessment.isPublished && ![UserRole.ADMIN, UserRole.INSTRUCTOR].includes(req.user?.role as UserRole)) {
+    return res.status(404).json({ success: false, error: "Assessment not found" });
+  }
+
+  // Students must be enrolled in the course's program and course
   if (req.user?.role === UserRole.STUDENT) {
-    const enrollment = await Enrollment.findOne({ studentId: req.user._id, courseId: assessment.courseId });
+    const course = await Course.findById(assessment.courseId).select("programId");
+    if (!course) return res.status(404).json({ success: false, error: "Course not found" });
+
+    const enrollment = await Enrollment.findOne({
+      studentId: req.user._id,
+      programId: course.programId,
+      "coursesProgress.courseId": assessment.courseId
+    });
+
     if (!enrollment) return res.status(403).json({ success: false, error: "Access denied" });
   }
 
@@ -195,21 +237,18 @@ export const deleteAssessment = asyncHandler(async (req: AuthRequest, res: Respo
   }
 
   await assessment.deleteOne();
- return res.status(200).json({ success: true, message: "Assessment deleted successfully" });
+  return res.status(200).json({ success: true, message: "Assessment deleted successfully" });
 });
 
 
 // ==============================
 // PUBLISH / UNPUBLISH ASSESSMENT
 // ==============================
-
-// controllers/assessmentController.ts
-
 export const toggleAssessmentPublish = asyncHandler(async (req: AuthRequest, res: Response) => {
   console.log('=== TOGGLE PUBLISH DEBUG ===');
   console.log('Assessment ID:', req.params.id);
   console.log('User:', req.user);
-  
+
   const assessment = await Assessment.findById(req.params.id);
   if (!assessment) {
     return res.status(404).json({ success: false, error: "Assessment not found" });
@@ -222,9 +261,9 @@ export const toggleAssessmentPublish = asyncHandler(async (req: AuthRequest, res
     courseIdType: typeof assessment.courseId
   });
 
-  // Extract course ID properly (handle both ObjectId and populated object)
-  const courseId = typeof assessment.courseId === 'object' 
-    ? (assessment.courseId as any)._id 
+  // Extract course ID (ObjectId or populated)
+  const courseId = typeof assessment.courseId === 'object'
+    ? (assessment.courseId as any)._id
     : assessment.courseId;
 
   console.log('Extracted courseId:', courseId);
@@ -246,7 +285,7 @@ export const toggleAssessmentPublish = asyncHandler(async (req: AuthRequest, res
   if (req.user?.role === UserRole.INSTRUCTOR) {
     const userIdStr = req.user._id.toString();
     const creatorIdStr = course.createdBy.toString();
-    
+
     console.log('PERMISSION CHECK:', {
       userRole: req.user.role,
       userId: userIdStr,
@@ -254,15 +293,15 @@ export const toggleAssessmentPublish = asyncHandler(async (req: AuthRequest, res
       match: creatorIdStr === userIdStr,
       comparison: `"${userIdStr}" === "${creatorIdStr}"`
     });
-    
+
     if (creatorIdStr !== userIdStr) {
       console.log('❌ PERMISSION DENIED');
-      return res.status(403).json({ 
-        success: false, 
-        error: "You can only publish/unpublish assessments for courses you created" 
+      return res.status(403).json({
+        success: false,
+        error: "You can only publish/unpublish assessments for courses you created"
       });
     }
-    
+
     console.log('✅ PERMISSION GRANTED');
   }
 
@@ -270,14 +309,14 @@ export const toggleAssessmentPublish = asyncHandler(async (req: AuthRequest, res
   assessment.isPublished = !assessment.isPublished;
   await assessment.save();
 
-  // Populate before sending response
+  // Populate for response
   await assessment.populate('courseId moduleId lessonId', 'title');
 
   console.log('=== PUBLISH SUCCESSFUL ===');
-  return res.status(200).json({ 
-    success: true, 
-    message: `Assessment ${assessment.isPublished ? "published" : "unpublished"} successfully`, 
-    data: assessment 
+  return res.status(200).json({
+    success: true,
+    message: `Assessment ${assessment.isPublished ? "published" : "unpublished"} successfully`,
+    data: assessment
   });
 });
 
@@ -317,18 +356,27 @@ export const reorderAssessments = asyncHandler(
 // ==============================
 export const getAssessmentsByCourse = asyncHandler(async (req: AuthRequest, res: Response) => {
   const { courseId } = req.params;
-  const course = await Course.findById(courseId);
+  const course = await Course.findById(courseId).select("programId");
   if (!course) return res.status(404).json({ success: false, error: "Course not found" });
 
   const filter: any = { courseId };
+
   if (req.user?.role === UserRole.STUDENT) {
-    const enrollment = await Enrollment.findOne({ studentId: req.user._id, courseId });
+    const enrollment = await Enrollment.findOne({
+      studentId: req.user._id,
+      programId: course.programId,
+      "coursesProgress.courseId": courseId
+    });
+
     if (!enrollment) return res.status(403).json({ success: false, error: "Access denied" });
     filter.isPublished = true;
   }
 
-  const assessments = await Assessment.find(filter).populate("moduleId lessonId", "title").sort({ order: 1 });
- return res.status(200).json({ success: true, count: assessments.length, data: assessments });
+  const assessments = await Assessment.find(filter)
+    .populate("moduleId lessonId", "title")
+    .sort({ order: 1 });
+
+  return res.status(200).json({ success: true, count: assessments.length, data: assessments });
 });
 
 
@@ -337,17 +385,30 @@ export const getAssessmentsByCourse = asyncHandler(async (req: AuthRequest, res:
 // ==============================
 export const getAssessmentsByModule = asyncHandler(async (req: AuthRequest, res: Response) => {
   const { moduleId } = req.params;
-  const module = await Module.findById(moduleId);
-  if (!module) return res.status(404).json({ success: false, error: "Module not found" });
+  const moduleDoc = await Module.findById(moduleId);
+  if (!moduleDoc) return res.status(404).json({ success: false, error: "Module not found" });
 
   const filter: any = { moduleId };
+
   if (req.user?.role === UserRole.STUDENT) {
-    const enrollment = await Enrollment.findOne({ studentId: req.user._id, courseId: module.course });
+    // Need the course & program to verify enrollment
+    const course = await Course.findById(moduleDoc.courseId).select("programId");
+    if (!course) return res.status(404).json({ success: false, error: "Course not found" });
+
+    const enrollment = await Enrollment.findOne({
+      studentId: req.user._id,
+      programId: course.programId,
+      "coursesProgress.courseId": moduleDoc.courseId
+    });
+
     if (!enrollment) return res.status(403).json({ success: false, error: "Access denied" });
     filter.isPublished = true;
   }
 
-  const assessments = await Assessment.find(filter).populate("lessonId", "title").sort({ order: 1 });
+  const assessments = await Assessment.find(filter)
+    .populate("lessonId", "title")
+    .sort({ order: 1 });
+
   return res.status(200).json({ success: true, count: assessments.length, data: assessments });
 });
 
@@ -358,8 +419,7 @@ export const sendAssessmentReminder = asyncHandler(
   async (req: AuthRequest, res: Response) => {
     const { assessmentId } = req.params;
 
-    const assessment = await Assessment.findById(assessmentId).populate('courseId', 'title');
-    
+    const assessment = await Assessment.findById(assessmentId).populate('courseId', 'title programId');
     if (!assessment) {
       res.status(404).json({ success: false, error: "Assessment not found" });
       return;
@@ -373,10 +433,11 @@ export const sendAssessmentReminder = asyncHandler(
       return;
     }
 
-    // Get all enrolled students who haven't submitted
+    // Get all enrolled students in the course (active)
     const enrollments = await Enrollment.find({
-      courseId: assessment.courseId,
-      status: "active",
+      programId: (assessment.courseId as any).programId ?? undefined,
+      'coursesProgress.courseId': assessment.courseId,
+      status: EnrollmentStatus.ACTIVE
     }).populate("studentId");
 
     const io = getIo();
@@ -384,32 +445,29 @@ export const sendAssessmentReminder = asyncHandler(
     let remindersSent = 0;
 
     for (const enrollment of enrollments) {
-      if (enrollment.studentId) {
-        const student = enrollment.studentId as any;
+      const student = (enrollment as any).studentId;
+      if (!student?._id) continue;
 
-        // Create notification
-        await pushNotification({
-          userId: student._id,
-          type: NotificationType.REMINDER,
-          title: "Assessment Reminder",
-          message: `Don't forget to complete "${assessment.title}" in ${course.title}`,
-          relatedId: assessment._id,
-          relatedModel: "Assessment",
-        });
+      await pushNotification({
+        userId: student._id,
+        type: NotificationType.REMINDER,
+        title: "Assessment Reminder",
+        message: `Don't forget to complete "${assessment.title}" in ${course.title}`,
+        relatedId: assessment._id,
+        relatedModel: "Assessment",
+      });
 
-        // Emit real-time notification
-        io.to(student._id.toString()).emit("notification", {
-          type: NotificationType.REMINDER,
-          title: "Assessment Reminder",
-          message: `Complete "${assessment.title}" soon`,
-          assessmentId: assessment._id,
-          courseId: assessment.courseId,
-          dueDate: assessment.endDate,
-          timestamp: new Date(),
-        });
+      io.to(student._id.toString()).emit("notification", {
+        type: NotificationType.REMINDER,
+        title: "Assessment Reminder",
+        message: `Complete "${assessment.title}" soon`,
+        assessmentId: assessment._id,
+        courseId: assessment.courseId,
+        dueDate: assessment.endDate,
+        timestamp: new Date(),
+      });
 
-        remindersSent++;
-      }
+      remindersSent++;
     }
 
     res.status(200).json({

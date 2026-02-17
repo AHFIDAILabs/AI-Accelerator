@@ -3,7 +3,7 @@
 // ============================================
 
 import express from 'express';
-import { protect } from '../middlewares/auth';
+import { optionalAuth, protect } from '../middlewares/auth';
 import { authorize } from '../middlewares/adminAuth';
 import { UserRole } from '../models/user';
 import {
@@ -29,6 +29,10 @@ const moduleRouter = express.Router();
 // Get published modules (must come before /:id)
 moduleRouter.get('/published', getPublishedModules);
 
+
+// Public routes
+moduleRouter.get('/published', getPublishedModules);
+
 // ============================================
 // PROTECTED ROUTES (Auth Required)
 // ============================================
@@ -51,10 +55,8 @@ moduleRouter.put('/reorder', authorize(UserRole.INSTRUCTOR, UserRole.ADMIN), reo
 // ============================================
 
 // Get module by ID (public if published, protected if unpublished)
-moduleRouter.get('/:id', getModuleById);
-
-// Get module content (lessons)
-moduleRouter.get('/:moduleId/content', getModuleContent);
+moduleRouter.get('/:moduleId/content', optionalAuth, getModuleContent);
+moduleRouter.get('/:id', optionalAuth, getModuleById);
 
 // ============================================
 // INSTRUCTOR & ADMIN ROUTES

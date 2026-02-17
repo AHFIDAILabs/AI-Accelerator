@@ -12,15 +12,19 @@ export enum NotificationType {
 
 export interface INotification extends Document {
   userId: mongoose.Types.ObjectId;
-  programId?: mongoose.Types.ObjectId; // optional program-wide notifications
+  programId?: mongoose.Types.ObjectId;
   type: NotificationType;
+
   title: string;
   message: string;
+
   relatedId?: mongoose.Types.ObjectId;
-  relatedModel?: 'Program' | 'Course' | 'Module' | 'Lesson' | 'Assessment' | 'Certificate';
-  url?: string; // optional deep link
+  relatedModel?: 'Program' | 'Course' | 'Module' | 'Lesson' | 'Assessment' | 'Certificate' | 'Submission';
+  url?: string;
+
   isRead: boolean;
   readAt?: Date;
+
   createdAt: Date;
   updatedAt: Date;
 }
@@ -29,22 +33,28 @@ const notificationSchema = new Schema<INotification>(
   {
     userId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     programId: { type: Schema.Types.ObjectId, ref: 'Program', index: true },
+
     type: { type: String, enum: Object.values(NotificationType), required: true },
+
     title: { type: String, required: true },
     message: { type: String, required: true },
+
     relatedId: { type: Schema.Types.ObjectId, refPath: 'relatedModel' },
-    relatedModel: { 
-      type: String, 
-      enum: ['Program', 'Course', 'Module', 'Lesson', 'Assessment', 'Certificate'] 
+
+    relatedModel: {
+      type: String,
+      enum: ['Program', 'Course', 'Module', 'Lesson', 'Assessment', 'Certificate', 'Submission']
     },
-    url: { type: String },
+
+    url: String,
+
     isRead: { type: Boolean, default: false },
     readAt: Date
   },
   { timestamps: true }
 );
 
-// Index for fast querying notifications per user
 notificationSchema.index({ userId: 1, isRead: 1, createdAt: -1 });
 
-export const Notification: Model<INotification> = mongoose.model<INotification>('Notification', notificationSchema);
+export const Notification: Model<INotification> =
+  mongoose.model('Notification', notificationSchema);

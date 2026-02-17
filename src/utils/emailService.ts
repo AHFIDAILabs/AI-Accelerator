@@ -13,19 +13,18 @@ class EmailService {
 
   constructor() {
     // Use MailerSend SMTP configuration
-    this.transporter = nodemailer.createTransport({
-      host: process.env.EMAIL_HOST || 'smtp.mailersend.net',
-      port: parseInt(process.env.EMAIL_PORT || '587'),
-      secure: false, // Use STARTTLS
-      auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASSWORD,
-      },
-      tls: {
-        ciphers: 'SSLv3',
-        rejectUnauthorized: false // For development only
-      }
-    });
+this.transporter = nodemailer.createTransport({
+  host: "smtp.office365.com",
+  port: 587,
+  secure: false, // STARTTLS
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASSWORD,
+  },
+  tls: {
+    ciphers: "SSLv3"
+  }
+});
 
     // Verify connection
     this.transporter.verify((err, success) => {

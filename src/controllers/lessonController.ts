@@ -4,7 +4,7 @@
 
 import { Request, Response } from "express";
 import mongoose from "mongoose";
-import { ILesson, Lesson, ResourceType, LessonType, IResource } from "../models/Lesson";
+import { ILesson, Lesson, LessonType, ILessonResource } from "../models/Lesson";
 import { Module } from "../models/Module";
 import { Course } from "../models/Course";
 import { Progress } from "../models/ProgressTrack";
@@ -17,13 +17,15 @@ import { NotificationType } from "../models/Notification";
 import { notifyCourseStudents, pushNotification } from "../utils/pushNotification";
 import { NotificationTemplates } from "../utils/notificationTemplates";
 import { Program } from "../models/program";
+import { UserRole } from "../models/user";
 
 // ==============================
 // CREATE LESSON
 // ==============================
 export const createLesson = asyncHandler(async (req: AuthRequest, res: Response) => {
   const {
-    module,
+    module: moduleLegacy,            // backward compatibility
+    moduleId: moduleIdBody,          // new field (preferred)
     order,
     title,
     description,
@@ -43,9 +45,11 @@ export const createLesson = asyncHandler(async (req: AuthRequest, res: Response)
     return;
   }
 
+  const moduleId = moduleIdBody || moduleLegacy;
+
   // Log received data for debugging
   console.log('Received lesson data:', {
-    module,
+    moduleId,
     title,
     type,
     estimatedMinutes,
@@ -54,37 +58,35 @@ export const createLesson = asyncHandler(async (req: AuthRequest, res: Response)
     isRequired
   });
 
-  if (!module || !title || !description || !type || !estimatedMinutes || !content) {
-    res.status(400).json({ 
-      success: false, 
-      error: "Please provide module, title, description, type, estimatedMinutes, and content" 
+  if (!moduleId || !title || !description || !type || !estimatedMinutes || !content) {
+    res.status(400).json({
+      success: false,
+      error: "Please provide moduleId, title, description, type, estimatedMinutes, and content"
     });
     return;
   }
 
   // Verify module exists and get course info
-  const moduleExists = await Module.findById(module)
-    .populate('course', 'title createdBy');
-  
-  if (!moduleExists) {
+  const moduleDoc = await Module.findById(moduleId)
+    .populate('courseId', 'title createdBy');
+
+  if (!moduleDoc) {
     res.status(404).json({ success: false, error: "Module not found" });
     return;
   }
 
   // Check permissions for instructors
-  if (req.user.role === 'instructor') {
-    const course = moduleExists.course as any;
-    if (course.createdBy.toString() !== req.user._id.toString()) {
-      res.status(403).json({ 
-        success: false, 
-        error: "You can only create lessons in your own courses" 
-      });
-      return;
-    }
+ 
+if (req.user.role === UserRole.INSTRUCTOR) {
+  const course = moduleDoc.courseId as any;
+  if (course.createdBy.toString() !== req.user._id.toString()) {
+    return res.status(403).json({ success: false, error: "You can only create lessons in your own courses" });
   }
+}
+
 
   // Handle uploaded files
-  const resources: IResource[] = [];
+  const resources: ILessonResource[] = [];
   const files = req.files as { [fieldname: string]: Express.Multer.File[] };
 
   if (files) {
@@ -92,40 +94,40 @@ export const createLesson = asyncHandler(async (req: AuthRequest, res: Response)
       files.video.forEach((f) => {
         resources.push({
           title: f.originalname,
-          type: ResourceType.VIDEO,
+          type: LessonType.VIDEO,
           url: f.path,
           size: f.size,
         });
       });
     }
-    
+
     if (files.documents) {
       files.documents.forEach((f) => {
         resources.push({
           title: f.originalname,
-          type: ResourceType.PDF,
+          type: LessonType.PDF,
           url: f.path,
           size: f.size,
         });
       });
     }
-    
+
     if (files.slides) {
       files.slides.forEach((f) => {
         resources.push({
           title: f.originalname,
-          type: ResourceType.SLIDES,
+          type: LessonType.SLIDES,
           url: f.path,
           size: f.size,
         });
       });
     }
-    
+
     if (files.resources) {
       files.resources.forEach((f) => {
         resources.push({
           title: f.originalname,
-          type: ResourceType.OTHER,
+          type: LessonType.OTHER,
           url: f.path,
           size: f.size,
         });
@@ -133,7 +135,7 @@ export const createLesson = asyncHandler(async (req: AuthRequest, res: Response)
     }
   }
 
-  // Parse JSON strings from FormData (arrays and objects come as JSON strings)
+  // Parse JSON strings from FormData
   let parsedLearningObjectives: string[] = [];
   let parsedCodeExamples: string[] = [];
   let parsedAssignments: string[] = [];
@@ -141,8 +143,8 @@ export const createLesson = asyncHandler(async (req: AuthRequest, res: Response)
 
   try {
     if (learningObjectives) {
-      parsedLearningObjectives = typeof learningObjectives === 'string' 
-        ? JSON.parse(learningObjectives) 
+      parsedLearningObjectives = typeof learningObjectives === 'string'
+        ? JSON.parse(learningObjectives)
         : learningObjectives;
     }
   } catch (e) {
@@ -151,8 +153,8 @@ export const createLesson = asyncHandler(async (req: AuthRequest, res: Response)
 
   try {
     if (codeExamples) {
-      parsedCodeExamples = typeof codeExamples === 'string' 
-        ? JSON.parse(codeExamples) 
+      parsedCodeExamples = typeof codeExamples === 'string'
+        ? JSON.parse(codeExamples)
         : codeExamples;
     }
   } catch (e) {
@@ -161,8 +163,8 @@ export const createLesson = asyncHandler(async (req: AuthRequest, res: Response)
 
   try {
     if (assignments) {
-      parsedAssignments = typeof assignments === 'string' 
-        ? JSON.parse(assignments) 
+      parsedAssignments = typeof assignments === 'string'
+        ? JSON.parse(assignments)
         : assignments;
     }
   } catch (e) {
@@ -171,21 +173,48 @@ export const createLesson = asyncHandler(async (req: AuthRequest, res: Response)
 
   try {
     if (completionRule) {
-      parsedCompletionRule = typeof completionRule === 'string' 
-        ? JSON.parse(completionRule) 
+      parsedCompletionRule = typeof completionRule === 'string'
+        ? JSON.parse(completionRule)
         : completionRule;
     }
   } catch (e) {
     console.error('Error parsing completionRule:', e);
   }
 
-  // Parse boolean values from FormData (they come as strings "true"/"false")
+  // Parse boolean values from FormData
   const parsedIsPreview = isPreview === 'true' || isPreview === true;
   const parsedIsRequired = isRequired === 'false' ? false : true; // default true
 
+  // Determine lesson order
+  let lessonOrder: number;
+
+  if (order) {
+    // manual order provided
+    const exists = await Lesson.exists({ moduleId, order });
+    if (exists) {
+      return res.status(409).json({
+        success: false,
+        error: `A lesson with order ${order} already exists in this module.`,
+      });
+    }
+    lessonOrder = Number(order);
+  } else {
+    // auto-order next
+    const lastLesson = await Lesson.find({ moduleId })
+      .sort({ order: -1 })
+      .limit(1)
+      .select('order')
+      .lean();
+
+    lessonOrder = (lastLesson[0]?.order ?? 0) + 1;
+  }
+
+  const courseId = (moduleDoc.courseId as any)._id;
+
   const lesson = await Lesson.create({
-    module,
-    order: order || 1,
+    moduleId,
+    courseId,
+    order: lessonOrder,
     title,
     description,
     type,
@@ -201,14 +230,21 @@ export const createLesson = asyncHandler(async (req: AuthRequest, res: Response)
     isPublished: false,
   });
 
-// ✅ ADD THIS: Push lesson to module's lessons array
-  await Module.findByIdAndUpdate(
-    module._id,
-    { $push: { lessons: lesson._id } }
-  );
+  // ✅ Instead of pushing to module.lessons (not in schema), update denormalized counters
+  await Module.findByIdAndUpdate(moduleId, {
+    $inc: {
+      lessonCount: 1,
+      estimatedMinutes: Number.isFinite(Number(estimatedMinutes)) ? Number(estimatedMinutes) : 0
+    }
+  }).exec();
+
+  await Course.findByIdAndUpdate(courseId, {
+    $inc: { lessonCount: 1 }
+  }).exec();
+
   console.log('Lesson created successfully:', lesson._id);
 
-  res.status(201).json({
+  return res.status(201).json({
     success: true,
     message: "Lesson created successfully, pending publication",
     data: lesson,
@@ -221,17 +257,17 @@ export const createLesson = asyncHandler(async (req: AuthRequest, res: Response)
 export const toggleLessonPublish = asyncHandler(async (req: AuthRequest, res: Response) => {
   const lesson = await Lesson.findById(req.params.id)
     .populate({
-      path: 'module',
-      populate: { 
-        path: 'course', 
-        select: 'title program',
+      path: 'moduleId',
+      populate: {
+        path: 'courseId',
+        select: 'title programId createdBy',
         populate: {
-          path: 'program',
+          path: 'programId',
           select: 'title'
         }
       }
     });
-  
+
   if (!lesson) {
     res.status(404).json({ success: false, error: "Lesson not found" });
     return;
@@ -241,14 +277,23 @@ export const toggleLessonPublish = asyncHandler(async (req: AuthRequest, res: Re
   lesson.isPublished = !lesson.isPublished;
   await lesson.save();
 
-  // Notify students when lesson is published
+  // Notify students when lesson is newly published
   if (lesson.isPublished && !wasPublished) {
-    const module = lesson.module as any;
-    const course = module.course as any;
     
+const moduleDoc = lesson.moduleId as any;
+const course = moduleDoc.courseId as any;
+
+if (req.user?.role === UserRole.INSTRUCTOR) {
+  if (course.createdBy.toString() !== req.user._id.toString()) {
+    return res.status(403).json({
+      success: false,
+      error: "You can only publish/unpublish lessons in your own courses"
+    });
+  }
+}
     try {
-      const notification = NotificationTemplates.lessonPublished(lesson.title, module.title);
-      
+      const notification = NotificationTemplates.lessonPublished(lesson.title, moduleDoc.title);
+
       await notifyCourseStudents(course._id, {
         type: notification.type,
         title: notification.title,
@@ -257,26 +302,25 @@ export const toggleLessonPublish = asyncHandler(async (req: AuthRequest, res: Re
         relatedModel: "Lesson",
       });
 
-      // Real-time notification via Socket.IO
       const io = getIo();
-      
+
       const enrollments = await Enrollment.find({
-        program: course.program,
-        'coursesProgress.course': course._id,
-        status: { $in: ['active', 'pending'] },
+        programId: course.programId,
+        'coursesProgress.courseId': course._id,
+        status: { $in: [EnrollmentStatus.ACTIVE, EnrollmentStatus.PENDING] },
       }).populate('studentId');
 
       for (const enrollment of enrollments) {
-        if (enrollment.studentId) {
-          const student = enrollment.studentId as any;
-          
+        const student = (enrollment as any).studentId;
+        if (student?._id) {
           io.to(student._id.toString()).emit("notification", {
             type: NotificationType.COURSE_UPDATE,
             title: "New Lesson Available",
-            message: `${lesson.title} is now available in ${module.title}`,
+            message: `${lesson.title} is now available in ${moduleDoc.title}`,
             lessonId: lesson._id,
-            moduleId: module._id,
+            moduleId: moduleDoc._id,
             courseId: course._id,
+            programId: course.programId,
             timestamp: new Date(),
           });
         }
@@ -286,255 +330,267 @@ export const toggleLessonPublish = asyncHandler(async (req: AuthRequest, res: Re
     }
   }
 
-  res.json({
+ return res.json({
     success: true,
     message: `Lesson ${lesson.isPublished ? "published" : "unpublished"} successfully`,
     data: lesson,
   });
 });
 
-// ==============================
-// START LESSON (Mark as In Progress)
-// ==============================
-export const startLesson = asyncHandler(async (req: AuthRequest, res: Response) => {
-  if (!req.user) {
-    res.status(401).json({ success: false, error: "Unauthorized" });
-    return;
-  }
-
-  const lesson = await Lesson.findById(req.params.id);
+// ============================================
+// 🔹 HELPER: Get Lesson + Module + Course
+// ============================================
+const getLessonHierarchy = async (lessonId: string) => {
+  const lesson = await Lesson.findById(lessonId);
   if (!lesson || !lesson.isPublished) {
-    res.status(404).json({ success: false, error: "Lesson not found or not published" });
-    return;
+    throw new Error("Lesson not found or not published");
   }
 
-  // Get module and course info
-  const module = await Module.findById(lesson.module);
-  if (!module) {
-    res.status(404).json({ success: false, error: "Module not found" });
-    return;
-  }
+  const moduleDoc = await Module.findById(lesson.moduleId);
+  if (!moduleDoc) throw new Error("Module not found");
 
-  const course = await Course.findById(module.course);
-  if (!course) {
-    res.status(404).json({ success: false, error: "Course not found" });
-    return;
-  }
+  const course = await Course.findById(moduleDoc.courseId);
+  if (!course) throw new Error("Course not found");
 
-  // Find or create course-level progress
-  let progress = await Progress.findOne({ 
-    studentId: req.user._id, 
-    courseId: course._id 
+  return { lesson, module: moduleDoc, course };
+};
+
+// ============================================
+// 🔹 HELPER: Get or Create Progress (Race Safe)
+// ============================================
+const getOrCreateProgress = async (
+  studentId: any,
+  courseId: any,
+  programId: any
+) => {
+  const modules = await Module.find({ courseId });
+  const moduleIds = modules.map((m) => m._id);
+
+  const totalLessons = await Lesson.countDocuments({
+    moduleId: { $in: moduleIds },
+    isPublished: true,
   });
 
-  if (!progress) {
-    // Count total lessons in course
-    const modules = await Module.find({ course: course._id });
-    const moduleIds = modules.map(m => m._id);
-    const totalLessons = await Lesson.countDocuments({ module: { $in: moduleIds } });
+  const progress = await Progress.findOneAndUpdate(
+    { studentId, courseId },
+    {
+      $setOnInsert: {
+        studentId,
+        courseId,
+        programId,
+        modules: [],
+        overallProgress: 0,
+        completedLessons: 0,
+        totalLessons,
+        completedAssessments: 0,
+        totalAssessments: 0,
+        averageScore: 0,
+        totalTimeSpent: 0,
+        enrolledAt: new Date(),
+      },
+      $set: { lastAccessedAt: new Date() },
+    },
+    {
+      upsert: true,
+      new: true,
+      setDefaultsOnInsert: true,
+    }
+  );
 
-    progress = await Progress.create({
-      studentId: req.user._id,
-      courseId: course._id,
-      programId: course.program,
-      modules: [],
-      overallProgress: 0,
-      completedLessons: 0,
-      totalLessons,
-      completedAssessments: 0,
-      totalAssessments: 0,
-      averageScore: 0,
-      totalTimeSpent: 0,
-      lastAccessedAt: new Date(),
-      enrolledAt: new Date(),
-    });
+  if (!progress) {
+    throw new Error("Failed to initialize progress");
   }
 
-  // Find or create module progress
+  return progress;
+};
+
+// ============================================
+// 🔹 HELPER: Get or Create Module Progress
+// ============================================
+const getModuleProgress = (progress: any, moduleId: any) => {
   let moduleProgress = progress.modules.find(
-    (m) => m.moduleId.toString() === lesson.module.toString()
+    (m: any) => m.moduleId.toString() === moduleId.toString()
   );
 
   if (!moduleProgress) {
-    moduleProgress = {
-      moduleId: lesson.module,
+    progress.modules.push({
+      moduleId,
       lessons: [],
       assessments: [],
       completionPercentage: 0,
       startedAt: new Date(),
-    };
-    progress.modules.push(moduleProgress);
+    });
+
+    moduleProgress = progress.modules[progress.modules.length - 1];
   }
 
-  // Find or create lesson progress
-  let lessonProgress = moduleProgress.lessons.find(
-    (l) => l.lessonId.toString() === lesson._id.toString()
+  return moduleProgress;
+};
+
+// ============================================
+// START LESSON
+// ============================================
+export const startLesson = asyncHandler(async (req: AuthRequest, res: Response) => {
+  if (!req.user) {
+    return res.status(401).json({ success: false, error: "Unauthorized" });
+  }
+
+  const { lesson, module, course } = await (async () => {
+    const l = await Lesson.findById(req.params.id);
+    if (!l || !l.isPublished) throw new Error("Lesson not found or not published");
+    const m = await Module.findById(l.moduleId);
+    if (!m) throw new Error("Module not found");
+    const c = await Course.findById(m.courseId);
+    if (!c) throw new Error("Course not found");
+    return { lesson: l, module: m, course: c };
+  })();
+
+  const progress = await getOrCreateProgress(
+    req.user._id,
+    course._id,
+    (course as any).programId
   );
 
-  if (!lessonProgress) {
-    lessonProgress = {
+  const moduleProgress = getModuleProgress(progress, lesson.moduleId);
+
+  let lessonProgress = moduleProgress.lessons.find(
+    (l: any) => l.lessonId.toString() === lesson._id.toString()
+  );
+
+  if (lessonProgress?.status === "completed") {
+    return res.json({
+      success: true,
+      message: "Lesson already completed",
+      data: progress,
+    });
+  }
+
+  if (lessonProgress?.status === "in_progress") {
+    return res.json({
+      success: true,
+      message: "Lesson already in progress",
+      data: progress,
+    });
+  }
+
+  if (lessonProgress) {
+    lessonProgress.status = "in_progress";
+    lessonProgress.startedAt ||= new Date();
+  } else {
+    moduleProgress.lessons.push({
       lessonId: lesson._id,
       status: "in_progress",
       startedAt: new Date(),
       timeSpent: 0,
-    };
-    moduleProgress.lessons.push(lessonProgress);
-  } else if (lessonProgress.status === "not_started") {
-    lessonProgress.status = "in_progress";
-    lessonProgress.startedAt = new Date();
+    });
   }
 
-  progress.lastAccessedAt = new Date();
   await progress.save();
 
-  res.status(200).json({
+  return res.json({
     success: true,
     message: "Lesson started",
     data: progress,
   });
 });
 
-// ==============================
+// ============================================
 // COMPLETE LESSON
-// ==============================
+// ============================================
 export const completeLesson = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!req.user) {
-    res.status(401).json({ success: false, error: "Unauthorized" });
-    return;
+    return res.status(401).json({ success: false, error: "Unauthorized" });
   }
 
-  const { timeSpent } = req.body; // in minutes
+  const { timeSpent = 0 } = req.body;
 
-  const lesson = await Lesson.findById(req.params.id);
-  if (!lesson || !lesson.isPublished) {
-    res.status(404).json({ success: false, error: "Lesson not found or not published" });
-    return;
-  }
+  const { lesson, module, course } = await (async () => {
+    const l = await Lesson.findById(req.params.id);
+    if (!l || !l.isPublished) throw new Error("Lesson not found or not published");
+    const m = await Module.findById(l.moduleId);
+    if (!m) throw new Error("Module not found");
+    const c = await Course.findById(m.courseId);
+    if (!c) throw new Error("Course not found");
+    return { lesson: l, module: m, course: c };
+  })();
 
-  const module = await Module.findById(lesson.module);
-  if (!module) {
-    res.status(404).json({ success: false, error: "Module not found" });
-    return;
-  }
+  const progress = await getOrCreateProgress(
+    req.user._id,
+    course._id,
+    (course as any).programId
+  );
 
-  const course = await Course.findById(module.course);
-  if (!course) {
-    res.status(404).json({ success: false, error: "Course not found" });
-    return;
-  }
+  const moduleProgress = getModuleProgress(progress, lesson.moduleId);
 
-  // Find or create progress
-  let progress = await Progress.findOne({ 
-    studentId: req.user._id, 
-    courseId: course._id 
-  });
+  let lessonProgress = moduleProgress.lessons.find(
+    (l: any) => l.lessonId.toString() === lesson._id.toString()
+  );
 
-  if (!progress) {
-    const modules = await Module.find({ course: course._id });
-    const moduleIds = modules.map(m => m._id);
-    const totalLessons = await Lesson.countDocuments({ module: { $in: moduleIds } });
-
-    progress = await Progress.create({
-      studentId: req.user._id,
-      courseId: course._id,
-      programId: course.program,
-      modules: [],
-      overallProgress: 0,
-      completedLessons: 0,
-      totalLessons,
-      completedAssessments: 0,
-      totalAssessments: 0,
-      averageScore: 0,
-      totalTimeSpent: 0,
-      lastAccessedAt: new Date(),
-      enrolledAt: new Date(),
+  if (lessonProgress?.status === "completed") {
+    return res.json({
+      success: true,
+      message: "Lesson already completed",
+      data: progress,
     });
   }
 
-  // Find or create module progress
-  let moduleProgress = progress.modules.find(
-    (m) => m.moduleId.toString() === lesson.module.toString()
-  );
-
-  if (!moduleProgress) {
-    moduleProgress = {
-      moduleId: lesson.module,
-      lessons: [],
-      assessments: [],
-      completionPercentage: 0,
-      startedAt: new Date(),
-    };
-    progress.modules.push(moduleProgress);
-  }
-
-  // Find or create lesson progress
-  let lessonProgress = moduleProgress.lessons.find(
-    (l) => l.lessonId.toString() === lesson._id.toString()
-  );
-
-  if (!lessonProgress) {
-    lessonProgress = {
+  if (lessonProgress) {
+    lessonProgress.status = "completed";
+    lessonProgress.completedAt = new Date();
+    lessonProgress.timeSpent = (lessonProgress.timeSpent || 0) + timeSpent;
+  } else {
+    moduleProgress.lessons.push({
       lessonId: lesson._id,
       status: "completed",
       startedAt: new Date(),
       completedAt: new Date(),
-      timeSpent: timeSpent || 0,
-    };
-    moduleProgress.lessons.push(lessonProgress);
-  } else if (lessonProgress.status !== "completed") {
-    lessonProgress.status = "completed";
-    lessonProgress.completedAt = new Date();
-    lessonProgress.timeSpent = (lessonProgress.timeSpent || 0) + (timeSpent || 0);
+      timeSpent,
+    });
   }
 
-  // Calculate module completion percentage
-  const moduleLessons = await Lesson.countDocuments({ module: lesson.module });
-  const completedInModule = moduleProgress.lessons.filter(l => l.status === "completed").length;
-  moduleProgress.completionPercentage = Math.round((completedInModule / moduleLessons) * 100);
+  // 🔹 Recalculate Module Completion
+  const moduleLessons = await Lesson.countDocuments({
+    moduleId: lesson.moduleId,
+    isPublished: true,
+  });
 
-  if (moduleProgress.completionPercentage === 100 && !moduleProgress.completedAt) {
-    moduleProgress.completedAt = new Date();
+  const completedInModule = moduleProgress.lessons.filter(
+    (l: any) => l.status === "completed"
+  ).length;
+
+  moduleProgress.completionPercentage = moduleLessons > 0
+    ? Math.round((completedInModule / moduleLessons) * 100)
+    : 0;
+
+  if (moduleProgress.completionPercentage === 100) {
+    moduleProgress.completedAt ||= new Date();
   }
 
-  // Calculate overall progress
+  // 🔹 Recalculate Overall Progress
   const totalCompletedLessons = progress.modules.reduce(
-    (sum, m) => sum + m.lessons.filter(l => l.status === "completed").length,
+    (sum: number, m: any) =>
+      sum + m.lessons.filter((l: any) => l.status === "completed").length,
     0
   );
 
   progress.completedLessons = totalCompletedLessons;
-  progress.overallProgress = progress.totalLessons > 0 
-    ? Math.round((totalCompletedLessons / progress.totalLessons) * 100) 
-    : 0;
-  
-  progress.totalTimeSpent += (timeSpent || 0) / 60; // Convert minutes to hours
-  progress.lastAccessedAt = new Date();
+  progress.overallProgress =
+    progress.totalLessons > 0
+      ? Math.round((totalCompletedLessons / progress.totalLessons) * 100)
+      : 0;
+
+  // Store hours (your schema says hours)
+  progress.totalTimeSpent += timeSpent / 60;
 
   await progress.save();
 
-  // Update enrollment progress
-  await updateEnrollmentProgress(req.user._id, course.program, course._id);
+  // Also try to update enrollment progress (best-effort)
+  await updateEnrollmentProgress(req.user._id, (course as any).programId, course._id);
 
-  // Check for module completion and notify
-  if (moduleProgress.completionPercentage === 100 && completedInModule === moduleLessons) {
-    try {
-      await pushNotification({
-        userId: req.user._id,
-        type: NotificationType.COURSE_UPDATE,
-        title: "Module Completed!",
-        message: `Congratulations! You've completed ${module.title}`,
-        relatedId: module._id,
-        relatedModel: "Module",
-      });
-    } catch (error) {
-      console.error('Error sending module completion notification:', error);
-    }
-  }
-
-  res.json({ 
-    success: true, 
-    message: "Lesson marked as completed", 
-    data: progress 
+  return res.json({
+    success: true,
+    message: "Lesson marked as completed",
+    data: progress,
   });
 });
 
@@ -547,11 +603,11 @@ async function updateEnrollmentProgress(
   courseId: mongoose.Types.ObjectId
 ) {
   try {
-    const enrollment = await Enrollment.findOne({ studentId, program: programId });
+    const enrollment = await Enrollment.findOne({ studentId, programId });
     if (!enrollment) return;
 
     const courseProgressIndex = enrollment.coursesProgress.findIndex(
-      cp => cp.course.toString() === courseId.toString()
+      cp => cp.courseId.toString() === courseId.toString()
     );
 
     if (courseProgressIndex === -1) return;
@@ -561,15 +617,15 @@ async function updateEnrollmentProgress(
 
     // Update lessons completed count
     enrollment.coursesProgress[courseProgressIndex].lessonsCompleted = progress.completedLessons;
-    
+
     // Update course status to active if it was pending
-    if (enrollment.coursesProgress[courseProgressIndex].status === EnrollmentStatus.PENDING && 
+    if (enrollment.coursesProgress[courseProgressIndex].status === EnrollmentStatus.PENDING &&
         progress.completedLessons > 0) {
       enrollment.coursesProgress[courseProgressIndex].status = EnrollmentStatus.ACTIVE;
     }
-    
+
     // Check if course is completed (100% progress)
-    if (progress.overallProgress === 100 && 
+    if (progress.overallProgress === 100 &&
         enrollment.coursesProgress[courseProgressIndex].status !== EnrollmentStatus.COMPLETED) {
       enrollment.coursesProgress[courseProgressIndex].status = EnrollmentStatus.COMPLETED;
       enrollment.coursesProgress[courseProgressIndex].completionDate = new Date();
@@ -602,7 +658,7 @@ async function updateEnrollmentProgress(
 
       // Notify student of program completion
       const programDoc = await Program.findById(programId).select('title');
-      
+
       if (programDoc) {
         await pushNotification({
           userId: studentId,
@@ -610,7 +666,7 @@ async function updateEnrollmentProgress(
           title: "Program Completed!",
           message: `Congratulations! You've completed the ${programDoc.title} program`,
           relatedId: programId,
-          relatedModel: "Course",
+          relatedModel: "Program", // ✅ fix
         });
       }
     }
@@ -626,12 +682,12 @@ export const getAllLessonsAdmin = asyncHandler(async (req: AuthRequest, res: Res
   const { page = '1', limit = '20', moduleId, type, isPublished } = req.query;
 
   const filter: any = {};
-  if (moduleId) filter.module = moduleId;
+  if (moduleId) filter.moduleId = moduleId;
   if (type) filter.type = type;
   if (isPublished !== undefined) filter.isPublished = isPublished === 'true';
 
   let query = Lesson.find(filter)
-    .populate('module', 'title course')
+    .populate('moduleId', 'title courseId')
     .sort({ order: 1 });
 
   const queryHelper = new QueryHelper(query, req.query);
@@ -640,13 +696,13 @@ export const getAllLessonsAdmin = asyncHandler(async (req: AuthRequest, res: Res
   const total = await Lesson.countDocuments(filter);
   const lessons = await query;
 
-  res.status(200).json({ 
-    success: true, 
+  res.status(200).json({
+    success: true,
     count: lessons.length,
     total,
     page: parseInt(page as string),
     pages: Math.ceil(total / parseInt(limit as string)),
-    data: lessons 
+    data: lessons
   });
 });
 
@@ -657,11 +713,11 @@ export const getPublishedLessons = asyncHandler(async (req: AuthRequest, res: Re
   const { page = '1', limit = '20', moduleId, type } = req.query;
 
   const filter: any = { isPublished: true };
-  if (moduleId) filter.module = moduleId;
+  if (moduleId) filter.moduleId = moduleId;
   if (type) filter.type = type;
 
   let query = Lesson.find(filter)
-    .populate('module', 'title course')
+    .populate('moduleId', 'title courseId')
     .sort({ order: 1 });
 
   const queryHelper = new QueryHelper(query, req.query);
@@ -670,13 +726,13 @@ export const getPublishedLessons = asyncHandler(async (req: AuthRequest, res: Re
   const total = await Lesson.countDocuments(filter);
   const lessons = await query;
 
-  res.status(200).json({ 
-    success: true, 
+  res.status(200).json({
+    success: true,
     count: lessons.length,
     total,
     page: parseInt(page as string),
     pages: Math.ceil(total / parseInt(limit as string)),
-    data: lessons 
+    data: lessons
   });
 });
 
@@ -686,11 +742,11 @@ export const getPublishedLessons = asyncHandler(async (req: AuthRequest, res: Re
 export const getLessonById = asyncHandler(async (req: AuthRequest, res: Response) => {
   const lesson = await Lesson.findById(req.params.id)
     .populate({
-      path: 'module',
-      select: 'title description course',
+      path: 'moduleId',
+      select: 'title description courseId',
       populate: {
-        path: 'course',
-        select: 'title program'
+        path: 'courseId',
+        select: 'title programId'
       }
     });
 
@@ -699,15 +755,14 @@ export const getLessonById = asyncHandler(async (req: AuthRequest, res: Response
     return;
   }
 
-  // Check access permissions
-  if (!lesson.isPublished && !lesson.isPreview) {
-    if (!req.user || !['admin', 'instructor'].includes(req.user.role)) {
-      res.status(404).json({ success: false, error: "Lesson not found" });
-      return;
-    }
+if (!lesson.isPublished && !lesson.isPreview) {
+  const isAdmin = req.user?.role === UserRole.ADMIN;
+  const isInstructor = req.user?.role === UserRole.INSTRUCTOR;
+  if (!isAdmin && !isInstructor) {
+    return res.status(404).json({ success: false, error: "Lesson not found" });
   }
-
-  res.status(200).json({ success: true, data: lesson });
+}
+ return res.status(200).json({ success: true, data: lesson });
 });
 
 // ==============================
@@ -730,18 +785,18 @@ export const getLessonsByModule = asyncHandler(async (req: AuthRequest, res: Res
     return;
   }
 
-  const filter: any = { module: moduleId };
-  
+  const filter: any = { moduleId };
+
   // Convert string 'true'/'false' to boolean
   const shouldIncludeUnpublished = includeUnpublished === 'true';
   const isAdminOrInstructor = req.user?.role === 'admin' || req.user?.role === 'instructor';
-  
+
   console.log('🔍 Filter logic:', {
     shouldIncludeUnpublished,
     isAdminOrInstructor,
     willShowUnpublished: shouldIncludeUnpublished && isAdminOrInstructor
   });
-  
+
   // Only show published lessons unless:
   // 1. includeUnpublished is explicitly 'true' AND
   // 2. User is admin or instructor
@@ -779,8 +834,8 @@ export const getLessonsByModule = asyncHandler(async (req: AuthRequest, res: Res
 // ==============================
 export const updateLesson = asyncHandler(async (req: AuthRequest, res: Response) => {
   const lesson = await Lesson.findById(req.params.id).populate({
-    path: 'module',
-    populate: { path: 'course', select: 'createdBy' }
+    path: 'moduleId',
+    populate: { path: 'courseId', select: 'createdBy' }
   });
 
   if (!lesson) {
@@ -790,14 +845,14 @@ export const updateLesson = asyncHandler(async (req: AuthRequest, res: Response)
 
   // Check permissions for instructors
   if (req.user?.role === "instructor") {
-    const module = lesson.module as any;
-    const course = module.course as any;
-    
+    const moduleDoc = lesson.moduleId as any;
+    const course = moduleDoc.courseId as any;
+
     if (course.createdBy.toString() !== req.user._id.toString()) {
       res.status(403).json({ success: false, error: "Cannot update this lesson" });
       return;
     }
-    
+
     // Unpublish lesson when instructor updates
     lesson.isPublished = false;
   }
@@ -805,13 +860,13 @@ export const updateLesson = asyncHandler(async (req: AuthRequest, res: Response)
   // Handle uploaded files
   const files = req.files as { [fieldname: string]: Express.Multer.File[] };
   if (files) {
-    const newResources: IResource[] = [];
+    const newResources: ILessonResource[] = [];
 
     if (files.video) {
       files.video.forEach((f) => {
         newResources.push({
           title: f.originalname,
-          type: ResourceType.VIDEO,
+          type: LessonType.VIDEO,
           url: f.path,
           size: f.size,
         });
@@ -822,7 +877,7 @@ export const updateLesson = asyncHandler(async (req: AuthRequest, res: Response)
       files.documents.forEach((f) => {
         newResources.push({
           title: f.originalname,
-          type: ResourceType.PDF,
+          type: LessonType.PDF,
           url: f.path,
           size: f.size,
         });
@@ -833,7 +888,7 @@ export const updateLesson = asyncHandler(async (req: AuthRequest, res: Response)
       files.slides.forEach((f) => {
         newResources.push({
           title: f.originalname,
-          type: ResourceType.SLIDES,
+          type: LessonType.SLIDES,
           url: f.path,
           size: f.size,
         });
@@ -844,14 +899,14 @@ export const updateLesson = asyncHandler(async (req: AuthRequest, res: Response)
       files.resources.forEach((f) => {
         newResources.push({
           title: f.originalname,
-          type: ResourceType.OTHER,
+          type: LessonType.OTHER,
           url: f.path,
           size: f.size,
         });
       });
     }
 
-    // Merge with existing resources if needed, or replace
+    // Merge with existing resources
     lesson.resources = [...(lesson.resources || []), ...newResources];
   }
 
@@ -870,12 +925,12 @@ export const updateLesson = asyncHandler(async (req: AuthRequest, res: Response)
 
   await lesson.save();
 
-  res.json({ 
-    success: true, 
-    message: req.user?.role === 'instructor' 
+  res.json({
+    success: true,
+    message: req.user?.role === 'instructor'
       ? "Lesson updated and submitted for review"
-      : "Lesson updated successfully", 
-    data: lesson 
+      : "Lesson updated successfully",
+    data: lesson
   });
 });
 
@@ -884,8 +939,8 @@ export const updateLesson = asyncHandler(async (req: AuthRequest, res: Response)
 // ==============================
 export const deleteLesson = asyncHandler(async (req: AuthRequest, res: Response) => {
   const lesson = await Lesson.findById(req.params.id).populate({
-    path: 'module',
-    populate: { path: 'course', select: 'createdBy' }
+    path: 'moduleId',
+    populate: { path: 'courseId', select: 'createdBy' }
   });
 
   if (!lesson) {
@@ -895,14 +950,26 @@ export const deleteLesson = asyncHandler(async (req: AuthRequest, res: Response)
 
   // Check permissions for instructors
   if (req.user?.role === "instructor") {
-    const module = lesson.module as any;
-    const course = module.course as any;
-    
+    const moduleDoc = lesson.moduleId as any;
+    const course = moduleDoc.courseId as any;
+
     if (course.createdBy.toString() !== req.user._id.toString()) {
       res.status(403).json({ success: false, error: "Cannot delete this lesson" });
       return;
     }
   }
+
+  // Before delete: decrement denormalized counters
+  await Module.findByIdAndUpdate(lesson.moduleId, {
+    $inc: {
+      lessonCount: -1,
+      estimatedMinutes: -(lesson.estimatedMinutes || 0)
+    }
+  }).exec();
+
+  await Course.findByIdAndUpdate((await Module.findById(lesson.moduleId))?.courseId, {
+    $inc: { lessonCount: -1 }
+  }).exec();
 
   await lesson.deleteOne();
 
@@ -920,16 +987,31 @@ export const reorderLessons = asyncHandler(async (req: AuthRequest, res: Respons
     return;
   }
 
+  const lessonIds = orders.map((o: any) => o.lessonId);
+const lessons = await Lesson.find({ _id: { $in: lessonIds } }).populate({
+  path: 'moduleId',
+  populate: { path: 'courseId', select: 'createdBy' }
+});
+
+if (req.user?.role === UserRole.INSTRUCTOR) {
+  const allOwned = lessons.every(l => {
+    const c = (l.moduleId as any).courseId as any;
+    return c.createdBy.toString() === req.user!._id.toString();
+  });
+  if (!allOwned) {
+    return res.status(403).json({ success: false, error: 'Cannot reorder lessons in courses you do not own' });
+  }
+}
   const bulkOps = orders.map((item: any) => ({
-    updateOne: { 
-      filter: { _id: item.lessonId }, 
-      update: { order: item.order } 
+    updateOne: {
+      filter: { _id: item.lessonId },
+      update: { order: item.order }
     },
   }));
 
   await Lesson.bulkWrite(bulkOps);
 
-  res.status(200).json({ success: true, message: "Lessons reordered successfully" });
+ return res.status(200).json({ success: true, message: "Lessons reordered successfully" });
 });
 
 // ==============================
@@ -939,10 +1021,10 @@ export const lessonStats = asyncHandler(async (req: Request, res: Response) => {
   const { moduleId, courseId } = req.query;
 
   const matchStage: any = {};
-  if (moduleId) matchStage.module = new mongoose.Types.ObjectId(moduleId as string);
+  if (moduleId) matchStage.moduleId = new mongoose.Types.ObjectId(moduleId as string);
   if (courseId) {
-    const modules = await Module.find({ course: courseId });
-    matchStage.module = { $in: modules.map(m => m._id) };
+    const modules = await Module.find({ courseId });
+    matchStage.moduleId = { $in: modules.map(m => m._id) };
   }
 
   const stats = await Lesson.aggregate([
@@ -969,8 +1051,8 @@ export const lessonStats = asyncHandler(async (req: Request, res: Response) => {
     },
   ]);
 
-  res.status(200).json({ 
-    success: true, 
+  res.status(200).json({
+    success: true,
     data: {
       byType: stats,
       overall: totalStats[0] || {
@@ -997,19 +1079,19 @@ export const getCourseProgress = asyncHandler(async (req: AuthRequest, res: Resp
     studentId: req.user._id,
     courseId: courseId
   })
-  .populate({
-    path: 'modules.moduleId',
-    select: 'title description order'
-  })
-  .populate({
-    path: 'modules.lessons.lessonId',
-    select: 'title type estimatedMinutes order'
-  });
+    .populate({
+      path: 'modules.moduleId',
+      select: 'title description order'
+    })
+    .populate({
+      path: 'modules.lessons.lessonId',
+      select: 'title type estimatedMinutes order'
+    });
 
   if (!progress) {
-    res.status(404).json({ 
-      success: false, 
-      error: "No progress found for this course" 
+    res.status(404).json({
+      success: false,
+      error: "No progress found for this course"
     });
     return;
   }
@@ -1034,20 +1116,20 @@ export const getLessonProgress = asyncHandler(async (req: AuthRequest, res: Resp
     return;
   }
 
-  const module = await Module.findById(lesson.module);
-  if (!module) {
+  const moduleDoc = await Module.findById(lesson.moduleId);
+  if (!moduleDoc) {
     res.status(404).json({ success: false, error: "Module not found" });
     return;
   }
 
   const progress = await Progress.findOne({
     studentId: req.user._id,
-    courseId: module.course
+    courseId: moduleDoc.courseId
   });
 
   if (!progress) {
-    res.status(200).json({ 
-      success: true, 
+    res.status(200).json({
+      success: true,
       data: {
         status: 'not_started',
         timeSpent: 0,
@@ -1058,12 +1140,12 @@ export const getLessonProgress = asyncHandler(async (req: AuthRequest, res: Resp
   }
 
   const moduleProgress = progress.modules.find(
-    m => m.moduleId.toString() === lesson.module.toString()
+    (m: any) => m.moduleId.toString() === lesson.moduleId.toString()
   );
 
   if (!moduleProgress) {
-    res.status(200).json({ 
-      success: true, 
+    res.status(200).json({
+      success: true,
       data: {
         status: 'not_started',
         timeSpent: 0,
@@ -1074,11 +1156,11 @@ export const getLessonProgress = asyncHandler(async (req: AuthRequest, res: Resp
   }
 
   const lessonProgress = moduleProgress.lessons.find(
-    l => l.lessonId.toString() === lessonId
+    (l: any) => l.lessonId.toString() === lessonId
   );
 
-  res.status(200).json({ 
-    success: true, 
+  res.status(200).json({
+    success: true,
     data: lessonProgress || {
       status: 'not_started',
       timeSpent: 0,
@@ -1116,16 +1198,24 @@ export const getAllLessonsInstructor = asyncHandler(
       moduleId,
     } = req.query;
 
+    
+
     // Build filter
     const filter: any = {};
-    if (moduleId) filter.module = moduleId;
+    if (moduleId) filter.moduleId = moduleId;
     if (type) filter.type = type;
     if (isPublished !== undefined)
       filter.isPublished = isPublished === "true";
 
+    // Build course scope if instructor
+if (req.user.role === UserRole.INSTRUCTOR) {
+  const myCourseIds = await Course.find({ createdBy: req.user._id }).distinct('_id');
+  filter.moduleId = filter.moduleId || { $in: await Module.find({ courseId: { $in: myCourseIds } }).distinct('_id') };
+}
+
     // Base query
     let query = Lesson.find(filter)
-      .populate("module", "title course")
+      .populate("moduleId", "title courseId")
       .sort({ updatedAt: -1 });
 
     // Apply QueryHelper

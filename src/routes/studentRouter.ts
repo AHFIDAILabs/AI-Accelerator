@@ -15,7 +15,8 @@ import {
   markAllNotificationsRead,
   deleteNotification,
   getRecentActivity,
-  getLearningStatistics
+  getLearningStatistics,
+  
 } from "../controllers/studentController";
 
 const studentRouter = express.Router();

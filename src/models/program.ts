@@ -1,104 +1,93 @@
-import mongoose, { Document, Schema } from "mongoose";
+import mongoose, { Schema, Document, Model } from "mongoose";
 
 export interface IProgram extends Document {
   title: string;
-  slug: string; // For URL
+  slug: string;
   description: string;
+courses: mongoose.Types.ObjectId[];
   category?: string;
   tags?: string[];
-  objectives? : string[];
-  level: string[];
+  objectives?: string[];
+  level: ("beginner" | "intermediate" | "advanced")[];
 
-  courses: mongoose.Types.ObjectId[]; // References Course
-  order: number; // Optional: order in platform listing
-  estimatedHours?: number; // Total across courses
+  courseCount: number;
+  estimatedHours?: number;
 
-  instructors: mongoose.Types.ObjectId[]; // Users
+  instructors: mongoose.Types.ObjectId[];
   coverImage?: string;
   bannerImage?: string;
 
-  price?: number; // Optional: free or paid
-  currency?: string; // e.g., 'USD', 'NGN'
-  enrollmentLimit?: number; // Optional cap
+  price?: number;
+  currency?: string;
+  enrollmentLimit?: number;
+
   isPublished: boolean;
+  isSelfPaced: boolean;
 
-  startDate?: Date; // Cohort-based
-  endDate?: Date;   // Cohort-based
-  isSelfPaced?: boolean; // Defaults to true
+  startDate?: Date;
+  endDate?: Date;
 
-  certificateTemplate?: string; // Optional template
-  prerequisites?: string[]; // Program-level requirements
+  certificateTemplate?: string;
+  prerequisites?: string[];
   targetAudience?: string;
 
   createdBy: mongoose.Types.ObjectId;
-  approvalStatus: 'pending' | 'approved' | 'rejected';
+  approvalStatus: "pending" | "approved" | "rejected";
 
   createdAt: Date;
   updatedAt: Date;
 }
 
-
 const programSchema = new Schema<IProgram>(
-{
-  title: { type: String, required: true, trim: true },
-  slug: { type: String, required: true, trim: true, unique: true },
-  description: { type: String, required: true },
-  category: String,
-  tags: [String],
+  {
+    title: { type: String, required: true, trim: true },
+    slug: { type: String, required: true, unique: true, trim: true },
 
-  courses: [{ type: Schema.Types.ObjectId, ref: 'Course', required: true }],
-  order: { type: Number, default: 1 },
-  estimatedHours: Number,
-
-  instructors: [{ type: Schema.Types.ObjectId, ref: 'User' }],
-  coverImage: String,
-  bannerImage: String,
-  level: {
+    description: { type: String, required: true },
+    category: String,
+    tags: [String],
+courses: [{ type: Schema.Types.ObjectId, ref: "Course" }],
+    objectives: { type: [String], default: [] },
+    level: {
       type: [String],
-      enum: {
-        values: ["beginner", "intermediate", "advanced"],
-        message: "{VALUE} is not a valid level"
-      },
+      enum: ["beginner", "intermediate", "advanced"],
       default: []
     },
-  price: { type: Number, default: 0 },
-  currency: { type: String, default: 'USD' },
-  enrollmentLimit: Number,
-  isPublished: { type: Boolean, default: false },
 
-   objectives: {
-      type: [String],
-      default: [],
-      validate: {
-        validator: function(v: string[]) {
-          return v.every(obj => obj.trim().length > 0);
-        },
-        message: "Objectives cannot contain empty strings"
-      }
-    },
+    courseCount: { type: Number, default: 0 },
+    estimatedHours: Number,
 
-  startDate: Date,
-  endDate: Date,
-  isSelfPaced: { type: Boolean, default: true },
+    instructors: [{ type: Schema.Types.ObjectId, ref: "User" }],
+    coverImage: String,
+    bannerImage: String,
 
-  certificateTemplate: String,
-  prerequisites: [String],
-  targetAudience: String,
+    price: { type: Number, default: 0 },
+    currency: { type: String, default: "USD" },
+    enrollmentLimit: Number,
 
-  createdBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
-  approvalStatus: {
-    type: String,
-    enum: ['pending', 'approved', 'rejected'],
-    default: 'pending'
-  }
-},
-{ timestamps: true }
+    isPublished: { type: Boolean, default: false },
+    isSelfPaced: { type: Boolean, default: true },
+
+    startDate: Date,
+    endDate: Date,
+
+    certificateTemplate: String,
+    prerequisites: [String],
+    targetAudience: String,
+
+    createdBy: { type: Schema.Types.ObjectId, ref: "User", required: true },
+
+    approvalStatus: {
+      type: String,
+      enum: ["pending", "approved", "rejected"],
+      default: "pending"
+    }
+  },
+  { timestamps: true }
 );
 
-// Optional: Index for faster program listing
 programSchema.index({ title: 1, category: 1 });
-programSchema.index({ isPublished: 1, order: 1 });
-programSchema.index({ createdBy: 1 });
-programSchema.index({ instructors: 1 });
+programSchema.index({ slug: 1 });
 
-export const Program: mongoose.Model<IProgram> = mongoose.model<IProgram>("Program", programSchema);
+
+export const Program: Model<IProgram> = mongoose.model("Program", programSchema);

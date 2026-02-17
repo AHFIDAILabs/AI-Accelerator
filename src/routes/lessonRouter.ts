@@ -15,10 +15,11 @@ import {
   reorderLessons,
   getPublishedLessons,
   getAllLessonsInstructor
-} from '../controllers/lessonController';
-import { protect } from '../middlewares/auth';
-import { adminOnly, instructorAccess } from '../middlewares/adminAuth';
+} from '../controllers/lessonController'; 
+import { protect, optionalAuth } from '../middlewares/auth';
+import { adminOnly, authorize, instructorAccess } from '../middlewares/adminAuth';
 import { uploadMixedFiles } from '../middlewares/uploadMiddleware';
+import { UserRole } from '../models/user';
 
 const lessonRouter = express.Router();
 
@@ -29,82 +30,37 @@ const lessonRouter = express.Router();
 // Get all published lessons (public)
 lessonRouter.get('/published', getPublishedLessons);
 
+// ✅ Public view for published lessons; unpublished allowed for Admin/Instructor (controller enforces)
+lessonRouter.get('/:id', optionalAuth, getLessonById);
+
 // ==============================
 // PROTECTED ROUTES (require auth)
 // ==============================
-
 lessonRouter.use(protect);
 
-// ==============================
-// MOVED: Get lessons by module (now protected)
-// ==============================
-
-// Get lessons for a module (protected - can see unpublished if instructor/admin)
+// Lessons for a module (protected; instructors/admin can include unpublished with ?includeUnpublished=true)
 lessonRouter.get('/module/:moduleId', getLessonsByModule);
 
-// ==============================
-// ADMIN-ONLY ROUTES (must be before generic :id routes)
-// ==============================
-
-// Get all lessons (admin)
+// Admin + Instructor dashboards/listing
 lessonRouter.get('/admin/all', adminOnly, getAllLessonsAdmin);
+lessonRouter.get('/', instructorAccess, getAllLessonsInstructor);
 
-// Get all lessons for instructor (can include unpublished)
-lessonRouter.get("/", instructorAccess, getAllLessonsInstructor);
+// Stats
+lessonRouter.get('/stats', authorize(UserRole.INSTRUCTOR, UserRole.ADMIN), lessonStats);
 
-// Get lesson statistics
-lessonRouter.get('/stats', adminOnly, instructorAccess, lessonStats);
-
-// Reorder lessons
+// Reorder
 lessonRouter.patch('/reorder', instructorAccess, reorderLessons);
 
-// ==============================
-// STUDENT ACTIONS (specific routes before :id)
-// ==============================
-
-// Get student progress for a course
+// Student actions
 lessonRouter.get('/course/:courseId/progress', getCourseProgress);
-
-// ==============================
-// LESSON MANAGEMENT (Instructor & Admin)
-// ==============================
-
-// Create lesson
-lessonRouter.post(
-  '/',
-  instructorAccess,
-  uploadMixedFiles,
-  createLesson
-);
-
-// ==============================
-// LESSON-SPECIFIC ROUTES (:id routes)
-// ==============================
-
-// Start lesson (Student)
 lessonRouter.post('/:id/start', startLesson);
-
-// Complete lesson (Student)
 lessonRouter.post('/:id/complete', completeLesson);
-
-// Get lesson progress
 lessonRouter.get('/:lessonId/progress', getLessonProgress);
 
-// Publish/Unpublish lesson (Admin only)
+// Management (Instructor & Admin)
+lessonRouter.post('/', instructorAccess, uploadMixedFiles, createLesson);
 lessonRouter.patch('/:id/publish', instructorAccess, toggleLessonPublish);
-
-// Update lesson
-lessonRouter.put(
-  '/:id',
-  instructorAccess,
-  uploadMixedFiles,
-  updateLesson
-);
-
-// Delete lesson (Admin only)
+lessonRouter.put('/:id', instructorAccess, uploadMixedFiles, updateLesson);
 lessonRouter.delete('/:id', adminOnly, deleteLesson);
-
-// Get single lesson by ID (must be last)
-lessonRouter.get('/:id', getLessonById);
 
 export default lessonRouter;

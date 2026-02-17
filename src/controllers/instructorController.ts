@@ -20,6 +20,7 @@ import { CloudinaryHelper } from '../utils/cloudinaryHelper';
 import { chunkArray } from '../utils/chunkArray';
 import { Lesson } from '../models/Lesson';
 import { Assessment } from '../models/Assessment';
+import { Program } from '../models/program';
 
 
 // ============================================
@@ -124,12 +125,12 @@ export const createInstructorCourse = asyncHandler(
     if (!req.user) {
       return res.status(401).json({ success: false, error: 'Not authorized' });
     }
-
+    
     const instructor = await User.findById(req.user._id);
     if (!instructor || instructor.role !== UserRole.INSTRUCTOR) {
       return res.status(403).json({ success: false, error: 'Instructor role required' });
     }
-
+    
     const {
       title,
       description,
@@ -141,23 +142,54 @@ export const createInstructorCourse = asyncHandler(
       objectives,
       prerequisites,
     } = req.body;
-
+    
     if (!title || !description || !program || !slug) {
       return res.status(400).json({
         success: false,
         error: 'Title, description, slug, and program are required',
       });
     }
+    
+    // Verify program exists
+    const programExists = await Program.findById(program);
+    if (!programExists) {
+      return res.status(404).json({
+        success: false,
+        error: 'Program not found',
+      });
+    }
 
+    // 🔧 ONE-TIME FIX: Repair this program's courses array if it's empty/incomplete
+    try {
+      const existingCoursesInProgram = programExists.courses || [];
+      const allCoursesForProgram = await Course.find({ program: program }).select('_id');
+      const allCourseIds = allCoursesForProgram.map(c => c._id.toString());
+      const existingCourseIds = existingCoursesInProgram.map((id: any) => id.toString());
+      
+      // Find courses that exist in DB but not in program.courses array
+      const missingCourses = allCourseIds.filter(id => !existingCourseIds.includes(id));
+      
+      if (missingCourses.length > 0) {
+        console.log(`🔧 Fixing program "${programExists.title}": Adding ${missingCourses.length} missing courses`);
+        await Program.findByIdAndUpdate(program, {
+          $addToSet: { courses: { $each: missingCourses } }
+        });
+        console.log(`✅ Fixed program "${programExists.title}"`);
+      }
+    } catch (fixError) {
+      console.error('⚠️ Error fixing program courses:', fixError);
+      // Don't fail the request, just log the error
+    }
+    
     // Parse JSON fields safely (FormData sends strings)
     const parsedObjectives =
       typeof objectives === 'string' ? JSON.parse(objectives) : objectives || [];
-
+    
     const parsedPrerequisites =
       typeof prerequisites === 'string' ? JSON.parse(prerequisites) : prerequisites || [];
-
+    
     let coverImage: string | undefined;
-
+    
     // Handle cover image upload
     if (req.file) {
       const upload = await CloudinaryHelper.uploadFile(
@@ -165,35 +197,40 @@ export const createInstructorCourse = asyncHandler(
         'image',
         'courses/covers'
       );
-
+      
       coverImage = upload.secure_url;
-
+      
       // Remove temp file
       await fs.unlink(req.file.path).catch(() => {});
     }
-
-    const course = await Course.create({
-      title: title.trim(),
-      description: description.trim(),
-      slug: slug.trim(),
-      program,
-      targetAudience: targetAudience?.trim(),
-      estimatedHours: estimatedHours ? Number(estimatedHours) : undefined,
-      order: order ? Number(order) : 1,
-      objectives: parsedObjectives,
-      prerequisites: parsedPrerequisites,
-      coverImage,
-      instructor: req.user._id,
-      createdBy: req.user._id,
-      approvalStatus: 'pending',
-      isPublished: false,
+    
+   const course = await Course.create({
+  title: title.trim(),
+  description: description.trim(),
+  slug: slug.trim(),
+  programId: program,                // ✅ FIXED
+  targetAudience: targetAudience?.trim(),
+  estimatedHours: estimatedHours ? Number(estimatedHours) : undefined,
+  order: order ? Number(order) : 1,
+  objectives: parsedObjectives,
+  prerequisites: parsedPrerequisites,
+  coverImage,
+  instructorId: req.user._id,        // ✅ FIXED
+  createdBy: req.user._id,
+  approvalStatus: 'pending',
+  isPublished: false,
+});
+    
+    // ✅ Add course to program's courses array
+    await Program.findByIdAndUpdate(program, {
+      $addToSet: { courses: course._id }
     });
-
+    
     // Attach course to instructor profile
     instructor.instructorProfile ??= { bio: '', linkedinProfile: '', coursesTaught: [] };
-    instructor.instructorProfile.coursesTaught?.push(course._id);
+    instructor.instructorProfile.coursesTaught?.push(course._id.toString());
     await instructor.save();
-
+    
     return res.status(201).json({
       success: true,
       message: 'Course created successfully and pending approval',
@@ -202,17 +239,19 @@ export const createInstructorCourse = asyncHandler(
   }
 );
 
-
 // @desc    Get all courses taught by instructor
 // @route   GET /api/v1/instructors/courses
 // @access  Instructor only
 export const getInstructorCourses = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!req.user) return res.status(401).json({ success: false });
 
-  const baseFilter: any = { instructor: req.user._id };
-  if (req.query.isPublished !== undefined) baseFilter.isPublished = req.query.isPublished === 'true';
+  const baseFilter: any = { instructorId: req.user._id };   // ✅ FIXED
 
-  let query = Course.find(baseFilter).populate('program', 'title');
+  if (req.query.isPublished !== undefined)
+    baseFilter.isPublished = req.query.isPublished === 'true';
+
+  let query = Course.find(baseFilter)
+    .populate('programId', 'title createdBy createdAt coverImage');    // programId is correct
 
   const helper = new QueryHelper(query, req.query)
     .search(['title', 'description'])
@@ -222,7 +261,14 @@ export const getInstructorCourses = asyncHandler(async (req: AuthRequest, res: R
   const courses = await helper.query;
   const total = await Course.countDocuments(baseFilter);
 
- return res.json({ success: true, count: courses.length, total, page, pages: Math.ceil(total / limit), data: courses });
+  return res.json({
+    success: true,
+    count: courses.length,
+    total,
+    page,
+    pages: Math.ceil(total / limit),
+    data: courses
+  });
 });
 
 
@@ -237,38 +283,37 @@ export const getInstructorCourse = asyncHandler(
 
     const course = await Course.findOne({
       _id: req.params.id,
-      instructor: req.user._id
-    }).populate('program', 'title');
+      instructorId: req.user._id      // ✅ FIXED
+    })
+    .populate('programId', 'title createdBy createdAt')  // programId is correct;
 
     if (!course) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Course not found or access denied' 
+      return res.status(404).json({
+        success: false,
+        error: 'Course not found or access denied'
       });
     }
 
-    // ✅ FIX: Use 'course' field, not 'courseId'
-    const modules = await Module.find({ course: course._id })
-      .populate('lessons') // Populate the lessons array
-      .sort({ order: 1 }); // ✅ FIX: Sort by order, not weekNumber
+    // 🔥 FIX: Module schema uses courseId, not "course"
+    const modules = await Module.find({ courseId: course._id })
+      .populate('lessons')
+      .sort({ order: 1 });
 
-    // ✅ Calculate stats for each module
     const modulesWithStats = modules.map(module => {
-      const moduleObj = module.toObject();
+      const obj = module.toObject();
       return {
-        ...moduleObj,
+        ...obj,
         stats: {
-          lessonCount: moduleObj.lessons?.length || 0,
-          totalMinutes: moduleObj.lessons?.reduce((sum: number, lesson: any) => 
+          lessonCount: obj.lessons?.length || 0,
+          totalMinutes: obj.lessons?.reduce((sum: number, lesson: any) =>
             sum + (lesson.estimatedMinutes || 0), 0) || 0
         }
       };
     });
 
-    // Get enrollment stats
     const enrollmentStats = await Enrollment.aggregate([
       { $match: { courseId: course._id } },
-      { 
+      {
         $group: {
           _id: '$status',
           count: { $sum: 1 }
@@ -304,8 +349,8 @@ export const getInstructorStudents = asyncHandler(
     const { page = 1, limit = 10, status } = req.query;
 
     // 1️⃣ Get all courses taught by instructor
-    const courses = await Course.find({ instructor: instructorId })
-      .select("_id title program");
+    const courses = await Course.find({ instructorId: instructorId })
+      .select("_id title programId approvalStatus isPublished coverImage createdBy createdAt");
 
     if (!courses.length) {
       return res.json({
@@ -320,7 +365,7 @@ export const getInstructorStudents = asyncHandler(
 
     const programMap: Record<string, { id: string; title: string }[]> = {};
     courses.forEach((c) => {
-      const pid = c.program.toString();
+      const pid = c.programId.toString();
       if (!programMap[pid]) programMap[pid] = [];
       programMap[pid].push({ id: c._id.toString(), title: c.title });
     });
@@ -436,7 +481,7 @@ export const getStudentCourseProgress = asyncHandler(
     const course = await Course.findById(courseId)
       .select("_id title slug description instructor program");
 
-    if (!course || !course.instructor.equals(req.user._id)) {
+    if (!course || !course.instructorId.equals(req.user._id)) {
       return res.status(403).json({
         success: false,
         error: "Access denied"
@@ -446,7 +491,7 @@ export const getStudentCourseProgress = asyncHandler(
     // === STUDENT ENROLLMENT ===
     const enrollment = await Enrollment.findOne({
       studentId,
-      program: course.program
+      programId: course.programId,
     }).select("status enrollmentDate updatedAt");
 
     if (!enrollment) {
@@ -490,7 +535,7 @@ export const getStudentCourseProgress = asyncHandler(
     };
 
     // === MODULES + LESSONS ===
-    const rawModules = await Module.find({ course: courseId })
+    const rawModules = await Module.find({ courseId: courseId })
       .populate("lessons", "title order estimatedMinutes")
       .sort({ order: 1 })
       .lean();
@@ -592,43 +637,43 @@ export const getStudentCourseProgress = asyncHandler(
 // @desc    Get pending submissions for grading
 // @route   GET /api/v1/instructors/submissions/pending
 // @access  Instructor only
-export const getPendingSubmissions = asyncHandler(
-  async (req: AuthRequest, res: Response) => {
-    if (!req.user) {
-      return res.status(401).json({ success: false, error: 'Not authorized' });
-    }
+export const getPendingSubmissions = asyncHandler(async (req: AuthRequest, res: Response) => {
+  if (!req.user) return res.status(401).json({ success: false, error: "Not authorized" });
 
-    const { courseId, page = '1', limit = '10' } = req.query;
+  const { courseId, page = "1", limit = "10" } = req.query;
 
-    const filter: any = { 
-      instructorId: req.user._id,
-      status: 'submitted'
-    };
+  // ✅ Get courseIds belonging to this instructor — Submission has no instructorId field
+  const instructorCourses = await Course.find({ instructorId: req.user._id }).select("_id");
+  const courseIds = instructorCourses.map(c => c._id);
 
-    if (courseId) {
-      filter.courseId = courseId;
-    }
+  const filter: any = {
+    courseId: { $in: courseIds },   // ✅ was: instructorId: req.user._id (field doesn't exist)
+    status: SubmissionStatus.SUBMITTED,
+  };
 
-    const submissions = await Submission.find(filter)
-      .populate('studentId', 'firstName lastName email profileImage')
-      .populate('assessmentId', 'title type maxScore')
-      .populate('courseId', 'title')
-      .sort({ submittedAt: 1 }) // Oldest first
-      .skip((parseInt(page as string) - 1) * parseInt(limit as string))
-      .limit(parseInt(limit as string));
-
-    const total = await Submission.countDocuments(filter);
-
-   return res.status(200).json({
-      success: true,
-      count: submissions.length,
-      total,
-      page: parseInt(page as string),
-      pages: Math.ceil(total / parseInt(limit as string)),
-      data: submissions
-    });
+  if (courseId && mongoose.Types.ObjectId.isValid(courseId as string)) {
+    filter.courseId = courseId; // narrow to specific course if provided
   }
-);
+
+  const total = await Submission.countDocuments(filter);
+
+  const submissions = await Submission.find(filter)
+    .populate("studentId", "firstName lastName email profileImage")
+    .populate("assessmentId", "title type totalPoints passingScore")
+    .populate("courseId", "title")
+    .sort({ submittedAt: 1 }) // oldest first — grade in order
+    .skip((parseInt(page as string) - 1) * parseInt(limit as string))
+    .limit(parseInt(limit as string));
+
+  return res.status(200).json({
+    success: true,
+    count: submissions.length,
+    total,
+    page: parseInt(page as string),
+    pages: Math.ceil(total / parseInt(limit as string)),
+    data: submissions,
+  });
+});
 
 // @desc    Grade a submission
 // @route   PUT /api/v1/instructors/submissions/:id/grade
@@ -637,40 +682,53 @@ export const gradeSubmission = asyncHandler(async (req: AuthRequest, res: Respon
   if (!req.user) return res.status(401).json({ success: false });
 
   const numericScore = Number(req.body.score);
-  if (isNaN(numericScore)) return res.status(400).json({ success: false, error: 'Invalid score' });
+  if (isNaN(numericScore)) return res.status(400).json({ success: false, error: "Invalid score" });
 
-  const submission = await Submission.findOne({ _id: req.params.id, instructorId: req.user._id })
-    .populate('assessmentId studentId');
+  // ✅ was: findOne({ _id, instructorId }) — instructorId doesn't exist on Submission
+  // Instead verify ownership through the course
+  const submission = await Submission.findById(req.params.id)
+    .populate("assessmentId")
+    .populate("studentId");
 
-  if (!submission) return res.status(404).json({ success: false });
+  if (!submission) return res.status(404).json({ success: false, error: "Submission not found" });
+
+  // Verify this instructor owns the course
+  const course = await Course.findOne({
+    _id: submission.courseId,
+    instructorId: req.user._id,   // ✅ ownership check on Course, not Submission
+  });
+  if (!course) return res.status(403).json({ success: false, error: "Access denied" });
 
   const assessment: any = submission.assessmentId;
-  if (numericScore < 0 || numericScore > assessment.maxScore)
-    return res.status(400).json({ success: false, error: `Score must be 0-${assessment.maxScore}` });
+  const totalPoints = assessment.totalPoints || 100;
+
+  if (numericScore < 0 || numericScore > totalPoints) {
+    return res.status(400).json({ success: false, error: `Score must be 0–${totalPoints}` });
+  }
 
   submission.score = numericScore;
+  submission.percentage = Math.round((numericScore / totalPoints) * 100);
   submission.feedback = req.body.feedback;
   submission.status = SubmissionStatus.GRADED;
   submission.gradedAt = new Date();
   submission.gradedBy = req.user._id;
-
   await submission.save();
 
+  const student: any = submission.studentId;
   await Progress.findOneAndUpdate(
-    { studentId: submission.studentId, courseId: submission.courseId },
+    { studentId: student._id, courseId: submission.courseId },
     { $inc: { completedAssessments: 1 } },
     { upsert: true }
   );
 
-  const student: any = submission.studentId;
   await pushNotification({
     userId: student._id,
     ...NotificationTemplates.assessmentGraded(assessment.title, numericScore),
     relatedId: assessment._id,
-    relatedModel: 'Assessment'
+    relatedModel: "Assessment",
   });
 
- return res.json({ success: true, message: 'Submission graded', data: submission });
+  return res.json({ success: true, message: "Submission graded", data: submission });
 });
 
 
@@ -684,7 +742,7 @@ export const gradeSubmission = asyncHandler(async (req: AuthRequest, res: Respon
 export const sendCourseAnnouncement = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!req.user) return res.status(401).json({ success: false });
 
-  const course = await Course.findOne({ _id: req.params.courseId, instructor: req.user._id });
+  const course = await Course.findOne({ _id: req.params.courseId, instructorId: req.user._id });
   if (!course) return res.status(403).json({ success: false });
 
   const enrollments = await Enrollment.find({ courseId: course._id, status: 'active' }).populate('studentId');
@@ -718,37 +776,47 @@ export const sendCourseAnnouncement = asyncHandler(async (req: AuthRequest, res:
 export const getInstructorDashboardStats = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!req.user) return res.status(401).json({ success: false });
 
-  const courses = await Course.find({ instructor: req.user._id });
+  const courses = await Course.find({ instructorId: req.user._id });
   const courseIds = courses.map(c => c._id);
 
-  const [totalEnrollments, activeStudents, pendingSubmissions, gradedThisWeek, recentSubmissions] = await Promise.all([
-    Enrollment.countDocuments({ courseId: { $in: courseIds } }),
-    Enrollment.countDocuments({ courseId: { $in: courseIds }, status: 'active' }),
-    Submission.countDocuments({ instructorId: req.user._id, status: SubmissionStatus.SUBMITTED }),
-    Submission.countDocuments({
-      instructorId: req.user._id,
-      status: SubmissionStatus.GRADED,
-      gradedAt: { $gte: new Date(Date.now() - 7 * 86400000) }
-    }),
-    Submission.find({ instructorId: req.user._id })
-      .populate('studentId', 'firstName lastName')
-      .populate('assessmentId', 'title')
-      .sort({ submittedAt: -1 })
-      .limit(5)
-  ]);
+  const oneWeekAgo = new Date(Date.now() - 7 * 86400000);
 
- return res.json({
+  const [totalEnrollments, activeStudents, pendingSubmissions, gradedThisWeek, recentSubmissions] =
+    await Promise.all([
+      Enrollment.countDocuments({ courseId: { $in: courseIds } }),
+      Enrollment.countDocuments({ courseId: { $in: courseIds }, status: "active" }),
+
+      // ✅ was: { instructorId: req.user._id, status: SUBMITTED } — instructorId doesn't exist
+      Submission.countDocuments({
+        courseId: { $in: courseIds },
+        status: SubmissionStatus.SUBMITTED,
+      }),
+
+      // ✅ same fix for graded count
+      Submission.countDocuments({
+        courseId: { $in: courseIds },
+        status: SubmissionStatus.GRADED,
+        gradedAt: { $gte: oneWeekAgo },
+      }),
+
+      // ✅ same fix for recent submissions
+      Submission.find({ courseId: { $in: courseIds } })
+        .populate("studentId", "firstName lastName")
+        .populate("assessmentId", "title")
+        .sort({ submittedAt: -1 })
+        .limit(5),
+    ]);
+
+  return res.json({
     success: true,
     data: {
       courses: { total: courses.length, published: courses.filter(c => c.isPublished).length },
       students: { totalEnrollments, active: activeStudents },
       assessments: { pendingSubmissions, gradedThisWeek },
-      recentActivity: { submissions: recentSubmissions }
-    }
+      recentActivity: { submissions: recentSubmissions },
+    },
   });
 });
-
-
 
 // ==========================================
 // GET INSTRUCTOR MODULES + COUNT
@@ -759,12 +827,12 @@ export const getInstructorModules = asyncHandler(async (req: AuthRequest, res: R
   }
 
   // Find courses taught by instructor
-  const courses = await Course.find({ instructor: req.user._id }).select("_id title program approvalStatus isPublished");
+  const courses = await Course.find({ instructorId: req.user._id }).select("_id title programId approvalStatus isPublished coverImage");
 
   const modules = await Module.find({
-    course: { $in: courses.map((c) => c._id) }
+    courseId: { $in: courses.map((c) => c._id) }
   })
-    .populate("course", "title program approvalStatus isPublished")
+    .populate("courseId", "title programId approvalStatus isPublished coverImage")
     .sort({ updatedAt: -1 });
 
   return res.status(200).json({
@@ -784,16 +852,16 @@ export const getInstructorLessons = asyncHandler(async (req: AuthRequest, res: R
   }
 
   // Get instructor courses → then modules → then lessons
-  const courses = await Course.find({ instructor: req.user._id }).select("_id title program approvalStatus isPublished");
-  const modules = await Module.find({ course: { $in: courses.map(c => c._id) } }).select("_id title course");
+  const courses = await Course.find({ instructorId: req.user._id }).select("_id title programId approvalStatus isPublished coverImage");
+  const modules = await Module.find({ courseId: { $in: courses.map(c => c._id) } }).select("_id title courseId");
 
   const lessons = await Lesson.find({
-    module: { $in: modules.map((m) => m._id) }
+    moduleId: { $in: modules.map((m) => m._id) }
   })
     .populate({
-      path: "module",
-      select: "title course ",
-      populate: { path: "course", select: "title program approvalStatus isPublished" }
+      path: "moduleId",
+      select: "title courseId",
+      populate: { path: "courseId", select: "title programId approvalStatus isPublished coverImage" }
     })
     .sort({ updatedAt: -1 });
 
@@ -813,12 +881,12 @@ export const getInstructorAssessments = asyncHandler(async (req: AuthRequest, re
     return res.status(401).json({ success: false, error: "Unauthorized" });
   }
 
-  const courses = await Course.find({ instructor: req.user._id }).select("_id title program approvalStatus isPublished");
+  const courses = await Course.find({ instructorId: req.user._id }).select("_id title programId approvalStatus isPublished coverImage");
 
   const assessments = await Assessment.find({
     courseId: { $in: courses.map(c => c._id) }
   })
-    .populate("courseId", "title program approvalStatus isPublished")
+    .populate("courseId", "title programId approvalStatus isPublished coverImage")
     .sort({ updatedAt: -1 });
 
   return res.status(200).json({

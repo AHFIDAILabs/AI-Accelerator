@@ -20,13 +20,6 @@ import { getIo } from "../config/socket";
 import crypto from "crypto";
 import emailService from "../utils/emailService";
 
-interface EmailEntry {
-  email: string;
-  firstName?: string;
-  lastName?: string;
-  cohort?: string;
-}
-
 // ======================================================
 // ENROLL A STUDENT IN A PROGRAM
 // ======================================================
@@ -40,10 +33,15 @@ export const enrollStudent = asyncHandler(async (req: AuthRequest, res: Response
 
   // Get student and program details
   const student = await User.findById(studentId);
-  const program = await Program.findById(programId).populate('courses');
+  const program = await Program.findById(programId);
 
   if (!student) {
     res.status(404).json({ success: false, error: "Student not found" });
+    return;
+  }
+
+  if (student.role !== UserRole.STUDENT) {
+    res.status(400).json({ success: false, error: "User is not a student" });
     return;
   }
 
@@ -59,11 +57,11 @@ export const enrollStudent = asyncHandler(async (req: AuthRequest, res: Response
 
   // Check enrollment limit
   if (program.enrollmentLimit) {
-    const currentEnrollments = await Enrollment.countDocuments({ 
-      program: programId, 
+    const currentEnrollments = await Enrollment.countDocuments({
+      programId,
       status: { $in: [EnrollmentStatus.PENDING, EnrollmentStatus.ACTIVE] }
     });
-    
+
     if (currentEnrollments >= program.enrollmentLimit) {
       res.status(400).json({ success: false, error: "Program enrollment limit reached" });
       return;
@@ -71,44 +69,46 @@ export const enrollStudent = asyncHandler(async (req: AuthRequest, res: Response
   }
 
   // Check if enrollment already exists
-  const existing = await Enrollment.findOne({ studentId, program: programId });
+  const existing = await Enrollment.findOne({ studentId, programId });
   if (existing) {
     res.status(400).json({ success: false, error: "Student already enrolled in this program" });
     return;
   }
 
+  // Fetch courses in the program (no reliance on Program.courses)
+  const programCourses = await Course.find({ programId }).select("_id");
+  const programCourseIds = programCourses.map(c => c._id);
+
   // Initialize courses progress for all courses in program
-// In your enrollment creation code:
-const coursesProgress = await Promise.all(
-  program.courses.map(async (courseId) => {
-    const course = await Course.findById(courseId);
-    if (!course) return null;
+  const coursesProgress = await Promise.all(
+    programCourseIds.map(async (cId) => {
+      const modules = await Module.find({ courseId: cId }).select("_id");
+      const moduleIds = modules.map(m => m._id);
+      const totalLessons = await Lesson.countDocuments({ moduleId: { $in: moduleIds } });
 
-    const modules = await Module.find({ course: courseId });
-    const moduleIds = modules.map(m => m._id);
-    const totalLessons = await Lesson.countDocuments({ module: { $in: moduleIds } });
+      return {
+        courseId: cId,
+        status: EnrollmentStatus.PENDING,
+        lessonsCompleted: 0,
+        totalLessons
+      };
+    })
+  );
 
-    return {
-      course: courseId,
-      courseId: courseId, // Add this for compatibility
-      status: EnrollmentStatus.PENDING,
-      lessonsCompleted: 0,
-      totalLessons
-    };
-  })
-);
-
-const validCoursesProgress = coursesProgress.filter(cp => cp !== null);
-
-  // Create enrollment
   const enrollment = await Enrollment.create({
     studentId,
-    program: programId,
+    programId,
     status: EnrollmentStatus.ACTIVE,
     cohort: cohort || student.studentProfile?.cohort,
     notes,
-    coursesProgress: validCoursesProgress
+    coursesProgress
   });
+
+  // ✅ INCREMENT currentEnrollment for each course
+  await Course.updateMany(
+    { _id: { $in: programCourseIds } },
+    { $inc: { currentEnrollment: 1 } }
+  );
 
   // Create program-level progress tracker
   await Progress.create({
@@ -117,13 +117,13 @@ const validCoursesProgress = coursesProgress.filter(cp => cp !== null);
     modules: [],
     overallProgress: 0,
     completedLessons: 0,
-    totalLessons: validCoursesProgress.reduce((sum, cp) => sum + cp.totalLessons, 0),
+    totalLessons: coursesProgress.reduce((sum, cp) => sum + (cp.totalLessons || 0), 0),
     completedAssessments: 0,
     totalAssessments: 0,
     averageScore: 0,
     totalTimeSpent: 0,
     completedCourses: 0,
-    totalCourses: program.courses.length,
+    totalCourses: programCourseIds.length,
     enrolledAt: new Date()
   });
 
@@ -134,7 +134,7 @@ const validCoursesProgress = coursesProgress.filter(cp => cp !== null);
     title: "Successfully Enrolled in Program",
     message: `You have been enrolled in ${program.title}`,
     relatedId: program._id,
-    relatedModel: "Course",
+    relatedModel: "Program",
   });
 
   // Emit real-time notification
@@ -142,7 +142,7 @@ const validCoursesProgress = coursesProgress.filter(cp => cp !== null);
   io.to(student._id.toString()).emit("notification", {
     type: NotificationType.COURSE_UPDATE,
     title: "Successfully Enrolled",
-    message: `Welcome to ${program.title}! You now have access to ${program.courses.length} courses.`,
+    message: `Welcome to ${program.title}! You now have access to ${programCourseIds.length} courses.`,
     programId: program._id,
     timestamp: new Date(),
   });
@@ -170,9 +170,7 @@ export const bulkEnrollStudentsInProgram = asyncHandler(async (req: AuthRequest,
     return;
   }
 
-  // Get program details
-  const program = await Program.findById(programId).populate('courses');
-
+  const program = await Program.findById(programId);
   if (!program) {
     res.status(404).json({ success: false, error: "Program not found" });
     return;
@@ -183,112 +181,91 @@ export const bulkEnrollStudentsInProgram = asyncHandler(async (req: AuthRequest,
     return;
   }
 
-  const enrollments = [];
-  const errors = [];
+  // Fetch courses in the program
+  const programCourses = await Course.find({ programId }).select("_id");
+  const programCourseIds = programCourses.map(c => c._id);
+
+  const enrollments: any[] = [];
+  const errors: any[] = [];
   const io = getIo();
 
-  for (const studentId of studentIds) {
+  for (const sid of studentIds) {
     try {
-      // Validate student
-      const student = await User.findById(studentId);
+      const student = await User.findById(sid);
       if (!student) {
-        errors.push({ 
-          studentId, 
-          error: 'Student not found',
-          email: 'N/A'
-        });
+        errors.push({ studentId: sid, error: 'Student not found', email: 'N/A' });
         continue;
       }
 
-      if (student.role !== 'student') {
-        errors.push({ 
-          studentId, 
-          error: 'User is not a student',
-          email: student.email
-        });
+      if (student.role !== UserRole.STUDENT) {
+        errors.push({ studentId: sid, error: 'User is not a student', email: student.email });
         continue;
       }
 
-      // Check if already enrolled
-      const existing = await Enrollment.findOne({ 
-        studentId, 
-        program: programId 
-      });
-
+      const existing = await Enrollment.findOne({ studentId: sid, programId });
       if (existing) {
-        errors.push({ 
-          studentId, 
-          error: 'Already enrolled in this program',
-          email: student.email
-        });
+        errors.push({ studentId: sid, error: 'Already enrolled in this program', email: student.email });
         continue;
       }
 
       // Check enrollment limit
       if (program.enrollmentLimit) {
-        const currentEnrollments = await Enrollment.countDocuments({ 
-          program: programId, 
+        const currentEnrollments = await Enrollment.countDocuments({
+          programId,
           status: { $in: [EnrollmentStatus.PENDING, EnrollmentStatus.ACTIVE] }
         });
-        
+
         if (currentEnrollments >= program.enrollmentLimit) {
-          errors.push({ 
-            studentId, 
-            error: 'Program enrollment limit reached',
-            email: student.email
-          });
+          errors.push({ studentId: sid, error: 'Program enrollment limit reached', email: student.email });
           continue;
         }
       }
 
-      // Initialize courses progress for all courses in program
-    // In your enrollment creation code:
-const coursesProgress = await Promise.all(
-  program.courses.map(async (courseId) => {
-    const course = await Course.findById(courseId);
-    if (!course) return null;
+      // Initialize courses progress for all courses
+      const coursesProgress = await Promise.all(
+        programCourseIds.map(async (cId) => {
+          const modules = await Module.find({ courseId: cId }).select("_id");
+          const moduleIds = modules.map(m => m._id);
+          const totalLessons = await Lesson.countDocuments({ moduleId: { $in: moduleIds } });
 
-    const modules = await Module.find({ course: courseId });
-    const moduleIds = modules.map(m => m._id);
-    const totalLessons = await Lesson.countDocuments({ module: { $in: moduleIds } });
+          return {
+            courseId: cId,
+            status: EnrollmentStatus.PENDING,
+            lessonsCompleted: 0,
+            totalLessons
+          };
+        })
+      );
 
-    return {
-      course: courseId,
-      courseId: courseId, // Add this for compatibility
-      status: EnrollmentStatus.PENDING,
-      lessonsCompleted: 0,
-      totalLessons
-    };
-  })
-);
-
-const validCoursesProgress = coursesProgress.filter(cp => cp !== null);
-
-
-      // Create enrollment
       const enrollment = await Enrollment.create({
-        studentId,
-        program: programId,
+        studentId: sid,
+        programId,
         status: EnrollmentStatus.ACTIVE,
         cohort: cohort || student.studentProfile?.cohort,
-        notes: notes || `Bulk enrolled by admin`,
-        coursesProgress: validCoursesProgress
+        notes: notes || "Bulk enrolled by admin",
+        coursesProgress
       });
+
+      // ✅ INCREMENT currentEnrollment for each course
+      await Course.updateMany(
+        { _id: { $in: programCourseIds } },
+        { $inc: { currentEnrollment: 1 } }
+      );
 
       // Create program-level progress tracker
       await Progress.create({
-        studentId,
+        studentId: sid,
         programId,
         modules: [],
         overallProgress: 0,
         completedLessons: 0,
-        totalLessons: validCoursesProgress.reduce((sum, cp) => sum + cp.totalLessons, 0),
+        totalLessons: coursesProgress.reduce((sum, cp) => sum + (cp.totalLessons || 0), 0),
         completedAssessments: 0,
         totalAssessments: 0,
         averageScore: 0,
         totalTimeSpent: 0,
         completedCourses: 0,
-        totalCourses: program.courses.length,
+        totalCourses: programCourseIds.length,
         enrolledAt: new Date()
       });
 
@@ -299,43 +276,32 @@ const validCoursesProgress = coursesProgress.filter(cp => cp !== null);
         studentEmail: student.email
       });
 
-      // Send notification to student
       await pushNotification({
         userId: student._id,
         type: NotificationType.COURSE_UPDATE,
         title: "Successfully Enrolled in Program",
         message: `You have been enrolled in ${program.title}`,
         relatedId: program._id,
-        relatedModel: "Course",
+        relatedModel: "Program",
       });
 
-      // Emit real-time notification
       io.to(student._id.toString()).emit("notification", {
         type: NotificationType.COURSE_UPDATE,
         title: "Successfully Enrolled",
-        message: `Welcome to ${program.title}! You now have access to ${program.courses.length} courses.`,
+        message: `Welcome to ${program.title}! You now have access to ${programCourseIds.length} courses.`,
         programId: program._id,
         timestamp: new Date(),
       });
 
     } catch (error: any) {
-      errors.push({ 
-        studentId, 
-        error: error.message,
-        email: 'Error fetching email'
-      });
+      errors.push({ studentId: sid, error: error.message, email: 'Error fetching email' });
     }
   }
 
   res.status(200).json({
     success: true,
     message: `Bulk enrollment completed: ${enrollments.length} successful, ${errors.length} failed`,
-    data: {
-      enrolled: enrollments.length,
-      failed: errors.length,
-      enrollments,
-      errors
-    }
+    data: { enrolled: enrollments.length, failed: errors.length, enrollments, errors }
   });
 });
 
@@ -355,9 +321,7 @@ export const bulkEnrollByEmail = asyncHandler(async (req: AuthRequest, res: Resp
     return;
   }
 
-  // Get program details
-  const program = await Program.findById(programId).populate('courses');
-
+  const program = await Program.findById(programId);
   if (!program) {
     res.status(404).json({ success: false, error: "Program not found" });
     return;
@@ -368,9 +332,13 @@ export const bulkEnrollByEmail = asyncHandler(async (req: AuthRequest, res: Resp
     return;
   }
 
-  const enrollments = [];
-  const errors = [];
-  const createdUsers = [];
+  // Courses in program
+  const programCourses = await Course.find({ programId }).select("_id title");
+  const programCourseIds = programCourses.map(c => c._id);
+
+  const enrollments: any[] = [];
+  const errors: any[] = [];
+  const createdUsers: any[] = [];
   const io = getIo();
 
   for (const entry of emails) {
@@ -380,29 +348,20 @@ export const bulkEnrollByEmail = asyncHandler(async (req: AuthRequest, res: Resp
     const userCohort = typeof entry === 'object' ? entry.cohort : undefined;
 
     try {
-      // Validate email
       if (!email || !email.includes('@')) {
-        errors.push({ 
-          email: email || 'Invalid', 
-          error: 'Invalid email format' 
-        });
+        errors.push({ email: email || 'Invalid', error: 'Invalid email format' });
         continue;
       }
 
-      // Check if user exists
       let student = await User.findOne({ email: email.toLowerCase() });
 
-      // Create user if doesn't exist and createUsers is true
       if (!student && createUsers) {
-        // Generate temporary password
         const tempPassword = crypto.randomBytes(8).toString('hex');
-        
-        // Extract first/last name from email if not provided
+
         const emailUsername = email.split('@')[0];
         const defaultFirstName = firstName || emailUsername.split('.')[0] || 'Student';
         const defaultLastName = lastName || emailUsername.split('.')[1] || '';
 
-        // Create student account
         student = await User.create({
           email: email.toLowerCase(),
           firstName: defaultFirstName.charAt(0).toUpperCase() + defaultFirstName.slice(1),
@@ -422,7 +381,6 @@ export const bulkEnrollByEmail = asyncHandler(async (req: AuthRequest, res: Resp
           tempPassword
         });
 
-        // Send welcome email with credentials
         try {
           await emailService.sendEmail({
             to: student.email,
@@ -466,67 +424,45 @@ export const bulkEnrollByEmail = asyncHandler(async (req: AuthRequest, res: Resp
           });
         } catch (emailError) {
           console.error(`Failed to send welcome email to ${email}:`, emailError);
-          // Continue even if email fails
         }
       } else if (!student) {
-        errors.push({ 
-          email, 
-          error: 'User not found and createUsers is disabled' 
-        });
+        errors.push({ email, error: 'User not found and createUsers is disabled' });
         continue;
       }
 
-      // Verify user is a student
       if (student.role !== UserRole.STUDENT) {
-        errors.push({ 
-          email, 
-          error: 'User is not a student',
-        });
+        errors.push({ email, error: 'User is not a student' });
         continue;
       }
 
-      // Check if already enrolled
-      const existing = await Enrollment.findOne({ 
-        studentId: student._id, 
-        program: programId 
-      });
-
+      const existing = await Enrollment.findOne({ studentId: student._id, programId });
       if (existing) {
-        errors.push({ 
-          email, 
-          error: 'Already enrolled in this program',
-        });
+        errors.push({ email, error: 'Already enrolled in this program' });
         continue;
       }
 
       // Check enrollment limit
       if (program.enrollmentLimit) {
-        const currentEnrollments = await Enrollment.countDocuments({ 
-          program: programId, 
+        const currentEnrollments = await Enrollment.countDocuments({
+          programId,
           status: { $in: [EnrollmentStatus.PENDING, EnrollmentStatus.ACTIVE] }
         });
-        
+
         if (currentEnrollments >= program.enrollmentLimit) {
-          errors.push({ 
-            email, 
-            error: 'Program enrollment limit reached',
-          });
+          errors.push({ email, error: 'Program enrollment limit reached' });
           continue;
         }
       }
 
       // Initialize courses progress
       const coursesProgress = await Promise.all(
-        program.courses.map(async (courseId) => {
-          const course = await Course.findById(courseId);
-          if (!course) return null;
-
-          const modules = await Module.find({ course: courseId });
+        programCourseIds.map(async (cId) => {
+          const modules = await Module.find({ courseId: cId }).select("_id");
           const moduleIds = modules.map(m => m._id);
-          const totalLessons = await Lesson.countDocuments({ module: { $in: moduleIds } });
+          const totalLessons = await Lesson.countDocuments({ moduleId: { $in: moduleIds } });
 
           return {
-            course: courseId,
+            courseId: cId,
             status: EnrollmentStatus.PENDING,
             lessonsCompleted: 0,
             totalLessons
@@ -534,17 +470,20 @@ export const bulkEnrollByEmail = asyncHandler(async (req: AuthRequest, res: Resp
         })
       );
 
-      const validCoursesProgress = coursesProgress.filter(cp => cp !== null);
-
-      // Create enrollment
       const enrollment = await Enrollment.create({
         studentId: student._id,
-        program: programId,
+        programId,
         status: EnrollmentStatus.ACTIVE,
         cohort: userCohort || cohort || student.studentProfile?.cohort,
         notes: notes || `Enrolled via ${createdUsers.some(u => u.email === email) ? 'email import (new user)' : 'email import'}`,
-        coursesProgress: validCoursesProgress
+        coursesProgress
       });
+
+      // ✅ INCREMENT currentEnrollment
+      await Course.updateMany(
+        { _id: { $in: programCourseIds } },
+        { $inc: { currentEnrollment: 1 } }
+      );
 
       // Create program-level progress tracker
       await Progress.create({
@@ -553,13 +492,13 @@ export const bulkEnrollByEmail = asyncHandler(async (req: AuthRequest, res: Resp
         modules: [],
         overallProgress: 0,
         completedLessons: 0,
-        totalLessons: validCoursesProgress.reduce((sum, cp) => sum + cp.totalLessons, 0),
+        totalLessons: coursesProgress.reduce((sum, cp) => sum + (cp.totalLessons || 0), 0),
         completedAssessments: 0,
         totalAssessments: 0,
         averageScore: 0,
         totalTimeSpent: 0,
         completedCourses: 0,
-        totalCourses: program.courses.length,
+        totalCourses: programCourseIds.length,
         enrolledAt: new Date()
       });
 
@@ -571,7 +510,6 @@ export const bulkEnrollByEmail = asyncHandler(async (req: AuthRequest, res: Resp
         isNewUser: createdUsers.some(u => u.email === email)
       });
 
-      // Send notification to student (only if not newly created)
       if (!createdUsers.some(u => u.email === email)) {
         await pushNotification({
           userId: student._id,
@@ -579,24 +517,20 @@ export const bulkEnrollByEmail = asyncHandler(async (req: AuthRequest, res: Resp
           title: "Successfully Enrolled in Program",
           message: `You have been enrolled in ${program.title}`,
           relatedId: program._id,
-          relatedModel: "Course",
+          relatedModel: "Program",
         });
 
-        // Emit real-time notification
         io.to(student._id.toString()).emit("notification", {
           type: NotificationType.COURSE_UPDATE,
           title: "Successfully Enrolled",
-          message: `Welcome to ${program.title}! You now have access to ${program.courses.length} courses.`,
+          message: `Welcome to ${programId.title}! You now have access to ${programCourseIds.length} courses.`,
           programId: program._id,
           timestamp: new Date(),
         });
       }
 
     } catch (error: any) {
-      errors.push({ 
-        email, 
-        error: error.message,
-      });
+      errors.push({ email, error: error.message });
     }
   }
 
@@ -613,7 +547,7 @@ export const bulkEnrollByEmail = asyncHandler(async (req: AuthRequest, res: Resp
         email: u.email,
         firstName: u.firstName,
         lastName: u.lastName,
-        // Don't send password in production, or send separately
+        // Do not include tempPassword in response
       }))
     }
   });
@@ -625,29 +559,29 @@ export const bulkEnrollByEmail = asyncHandler(async (req: AuthRequest, res: Resp
 export const getAvailableStudents = asyncHandler(async (req: AuthRequest, res: Response) => {
   const { programId, search, limit = '50' } = req.query;
 
-  const filter: any = { role: 'student' };
+  const filter: any = { role: UserRole.STUDENT };
 
   if (search) {
     filter.$or = [
-      { firstName: { $regex: search, $options: 'i' } },
-      { lastName: { $regex: search, $options: 'i' } },
-      { email: { $regex: search, $options: 'i' } }
+      { firstName: { $regex: search as string, $options: 'i' } },
+      { lastName: { $regex: search as string, $options: 'i' } },
+      { email: { $regex: (search as string), $options: 'i' } }
     ];
   }
 
   const students = await User.find(filter)
-    .select('_id firstName lastName email cohort profileImage studentProfile')
+    .select('_id firstName lastName email profileImage studentProfile')
     .limit(parseInt(limit as string))
     .sort({ firstName: 1 });
 
-  // If programId is provided, mark already enrolled students
   if (programId) {
-    const enrolledStudentIds = await Enrollment.find({ program: programId })
+    const enrolledStudentIds = await Enrollment.find({ programId })
       .distinct('studentId');
 
-    const studentsWithEnrollmentStatus = students.map(student => ({
-      ...student.toObject(),
-      isEnrolled: enrolledStudentIds.some(id => id.toString() === student._id.toString())
+    const studentsWithEnrollmentStatus = students.map(s => ({
+      ...s.toObject(),
+      cohort: s.studentProfile?.cohort,
+      isEnrolled: enrolledStudentIds.some(id => id.toString() === s._id.toString())
     }));
 
     return res.status(200).json({
@@ -657,10 +591,10 @@ export const getAvailableStudents = asyncHandler(async (req: AuthRequest, res: R
     });
   }
 
- return res.status(200).json({
+  return res.status(200).json({
     success: true,
     count: students.length,
-    data: students
+    data: students.map(s => ({ ...s.toObject(), cohort: s.studentProfile?.cohort }))
   });
 });
 
@@ -676,7 +610,7 @@ export const selfEnrollInProgram = asyncHandler(async (req: AuthRequest, res: Re
   const { programId } = req.params;
   const { scholarshipCode, paymentMethod } = req.body;
 
-  const program = await Program.findById(programId).populate('courses');
+  const program = await Program.findById(programId);
 
   if (!program) {
     res.status(404).json({ success: false, error: "Program not found" });
@@ -690,11 +624,11 @@ export const selfEnrollInProgram = asyncHandler(async (req: AuthRequest, res: Re
 
   // Check enrollment limit
   if (program.enrollmentLimit) {
-    const currentEnrollments = await Enrollment.countDocuments({ 
-      program: programId, 
+    const currentEnrollments = await Enrollment.countDocuments({
+      programId,
       status: { $in: [EnrollmentStatus.PENDING, EnrollmentStatus.ACTIVE] }
     });
-    
+
     if (currentEnrollments >= program.enrollmentLimit) {
       res.status(400).json({ success: false, error: "Program enrollment is full" });
       return;
@@ -702,11 +636,15 @@ export const selfEnrollInProgram = asyncHandler(async (req: AuthRequest, res: Re
   }
 
   // Check if already enrolled
-  const existing = await Enrollment.findOne({ studentId: req.user._id, program: programId });
+  const existing = await Enrollment.findOne({ studentId: req.user._id, programId });
   if (existing) {
     res.status(400).json({ success: false, error: "You are already enrolled in this program" });
     return;
   }
+
+  // Compute course list and totals
+  const programCourses = await Course.find({ programId }).select("_id");
+  const programCourseIds = programCourses.map(c => c._id);
 
   let scholarshipApplied = false;
   let discountAmount = 0;
@@ -714,9 +652,10 @@ export const selfEnrollInProgram = asyncHandler(async (req: AuthRequest, res: Re
 
   // Handle scholarship code if provided
   if (scholarshipCode && scholarshipCode.trim()) {
-    const scholarship = await Scholarship.findOne({ 
+    const scholarship = await Scholarship.findOne({
       code: scholarshipCode.trim().toUpperCase(),
-      programId: programId
+      programId: programId,
+      status: ScholarshipStatus.ACTIVE
     });
 
     if (!scholarship) {
@@ -724,16 +663,13 @@ export const selfEnrollInProgram = asyncHandler(async (req: AuthRequest, res: Re
       return;
     }
 
-    // Validate scholarship
-     const validation = scholarship.validateForStudent(req.user.email);
-
+    const validation = scholarship.validateForStudent(req.user.email);
     if (!validation.valid) {
       res.status(400).json({ success: false, error: validation.error });
       return;
     }
 
-    // Calculate discount
-    if (scholarship.discountType === 'percentage') {
+    if (scholarship.discountType === DiscountType.PERCENTAGE) {
       discountAmount = (finalPrice * scholarship.discountValue) / 100;
     } else {
       discountAmount = Math.min(scholarship.discountValue, finalPrice);
@@ -742,14 +678,12 @@ export const selfEnrollInProgram = asyncHandler(async (req: AuthRequest, res: Re
     finalPrice = Math.max(0, finalPrice - discountAmount);
     scholarshipApplied = true;
 
-    // Mark scholarship as used
     await scholarship.markAsUsed(req.user._id);
   }
 
-  // Check if payment is required
   if (finalPrice > 0 && !paymentMethod) {
-    res.status(400).json({ 
-      success: false, 
+    res.status(400).json({
+      success: false,
       error: "Payment required",
       data: {
         originalPrice: program.price,
@@ -761,11 +695,9 @@ export const selfEnrollInProgram = asyncHandler(async (req: AuthRequest, res: Re
     return;
   }
 
-  // TODO: Implement payment processing if finalPrice > 0 && paymentMethod
-  // For now, we'll only allow enrollment if finalPrice is 0 (free or 100% scholarship)
   if (finalPrice > 0) {
-    res.status(400).json({ 
-      success: false, 
+    res.status(400).json({
+      success: false,
       error: "Payment integration not yet implemented. Please use a 100% scholarship code or wait for payment feature.",
       data: {
         originalPrice: program.price,
@@ -779,16 +711,13 @@ export const selfEnrollInProgram = asyncHandler(async (req: AuthRequest, res: Re
 
   // Initialize courses progress
   const coursesProgress = await Promise.all(
-    program.courses.map(async (courseId) => {
-      const course = await Course.findById(courseId);
-      if (!course) return null;
-
-      const modules = await Module.find({ course: courseId });
+    programCourseIds.map(async (cId) => {
+      const modules = await Module.find({ courseId: cId }).select("_id");
       const moduleIds = modules.map(m => m._id);
-      const totalLessons = await Lesson.countDocuments({ module: { $in: moduleIds } });
+      const totalLessons = await Lesson.countDocuments({ moduleId: { $in: moduleIds } });
 
       return {
-        course: courseId,
+        courseId: cId,
         status: EnrollmentStatus.PENDING,
         lessonsCompleted: 0,
         totalLessons
@@ -796,15 +725,12 @@ export const selfEnrollInProgram = asyncHandler(async (req: AuthRequest, res: Re
     })
   );
 
-  const validCoursesProgress = coursesProgress.filter(cp => cp !== null);
-
-  // Create enrollment with scholarship info
   const enrollment = await Enrollment.create({
     studentId: req.user._id,
-    program: programId,
+    programId,
     status: EnrollmentStatus.ACTIVE,
     cohort: req.user.studentProfile?.cohort,
-    coursesProgress: validCoursesProgress,
+    coursesProgress,
     notes: scholarshipApplied ? `Enrolled with scholarship code: ${scholarshipCode}` : undefined
   });
 
@@ -815,32 +741,30 @@ export const selfEnrollInProgram = asyncHandler(async (req: AuthRequest, res: Re
     modules: [],
     overallProgress: 0,
     completedLessons: 0,
-    totalLessons: validCoursesProgress.reduce((sum, cp) => sum + cp.totalLessons, 0),
+    totalLessons: coursesProgress.reduce((sum, cp) => sum + (cp.totalLessons || 0), 0),
     completedAssessments: 0,
     totalAssessments: 0,
     averageScore: 0,
     totalTimeSpent: 0,
     completedCourses: 0,
-    totalCourses: program.courses.length,
+    totalCourses: programCourseIds.length,
     enrolledAt: new Date()
   });
 
-  // Send notification
-  const notificationMessage = scholarshipApplied 
+  const notification = NotificationTemplates.courseEnrolled(program.title);
+  const notificationMessage = scholarshipApplied
     ? `Congratulations! You've been successfully enrolled in ${program.title} with a scholarship.`
     : `You have successfully enrolled in ${program.title}`;
 
-  const notification = NotificationTemplates.courseEnrolled(program.title);
   await pushNotification({
     userId: req.user._id,
     type: notification.type,
     title: scholarshipApplied ? "Scholarship Enrollment Successful!" : notification.title,
     message: notificationMessage,
     relatedId: program._id,
-    relatedModel: "Course",
+    relatedModel: "Program",
   });
 
-  // Emit real-time notification
   const io = getIo();
   io.to(req.user._id.toString()).emit("notification", {
     type: notification.type,
@@ -852,8 +776,8 @@ export const selfEnrollInProgram = asyncHandler(async (req: AuthRequest, res: Re
 
   res.status(201).json({
     success: true,
-    message: scholarshipApplied 
-      ? "Successfully enrolled with scholarship" 
+    message: scholarshipApplied
+      ? "Successfully enrolled with scholarship"
       : "Successfully enrolled in program",
     data: {
       enrollment,
@@ -899,7 +823,6 @@ export const validateScholarshipCode = asyncHandler(
     }
 
     const validation = scholarship.validateForStudent(req.user.email);
-
     if (!validation.valid) {
       res.status(400).json({ success: false, error: validation.error });
       return;
@@ -947,25 +870,35 @@ export const getAllEnrollments = asyncHandler(async (req: AuthRequest, res: Resp
 
   const filter: any = {};
   if (status) filter.status = status;
-  if (programId) filter.program = programId;
+  if (programId) filter.programId = programId;
   if (cohort) filter.cohort = cohort;
 
   const total = await Enrollment.countDocuments(filter);
 
+  // ✅ Populate programId and studentId
   const enrollments = await Enrollment.find(filter)
-    .populate("studentId", "firstName lastName email cohort profileImage")
-    .populate("program", "title slug estimatedHours")
+    .populate("studentId", "firstName lastName email profileImage studentProfile")
+    .populate("programId", "title slug estimatedHours") // ✅ This populates programId field
+    .populate("coursesProgress.courseId", "title") // ✅ Also populate course names
     .sort({ enrollmentDate: -1 })
     .skip((parseInt(page as string) - 1) * parseInt(limit as string))
-    .limit(parseInt(limit as string));
+    .limit(parseInt(limit as string))
+    .lean(); // ✅ Use lean for better performance
 
-  res.status(200).json({ 
-    success: true, 
-    count: enrollments.length,
+  // ✅ Map programId → program for frontend consistency
+  const mappedEnrollments = enrollments.map((enrollment: any) => ({
+    ...enrollment,
+    program: enrollment.programId, // ✅ Rename programId to program
+    // Keep programId as well for backward compatibility
+  }));
+
+  res.status(200).json({
+    success: true,
+    count: mappedEnrollments.length,
     total,
     page: parseInt(page as string),
     pages: Math.ceil(total / parseInt(limit as string)),
-    data: enrollments 
+    data: mappedEnrollments // ✅ Return mapped data
   });
 });
 
@@ -980,34 +913,42 @@ export const getStudentEnrollments = asyncHandler(async (req: AuthRequest, res: 
 
   const enrollments = await Enrollment.find({ studentId: req.user._id })
     .populate({
-      path: "program",
-      select: "title description slug estimatedHours coverImage courses",
-      populate: {
-        path: "courses",
-        select: "title description order estimatedHours"
-      }
+      path: "programId",
+      select: "title description slug estimatedHours coverImage",
     })
     .sort({ enrollmentDate: -1 });
 
-  // Enhance with progress data
-  const enrollmentsWithProgress = await Promise.all(
-    enrollments.map(async (enrollment) => {
+  // Attach courses & progress per program
+  const out = await Promise.all(
+    enrollments.map(async (en) => {
+      const program = en.programId as any;
+
+      // Courses for this program
+      const courses = await Course.find({ programId: program._id })
+        .select("title description order estimatedHours")
+        .sort({ order: 1 });
+
+      // Program-level progress document (optional)
       const progress = await Progress.findOne({
         studentId: req.user!._id,
-        programId: enrollment.program._id
+        programId: program._id
       });
 
       return {
-        ...enrollment.toObject(),
+        ...en.toObject(),
+        programId: {
+          ...program.toObject(),
+          courses
+        },
         progress
       };
     })
   );
 
-  res.status(200).json({ 
-    success: true, 
-    count: enrollmentsWithProgress.length, 
-    data: enrollmentsWithProgress 
+  res.status(200).json({
+    success: true,
+    count: out.length,
+    data: out
   });
 });
 
@@ -1018,30 +959,35 @@ export const getEnrollmentById = asyncHandler(async (req: AuthRequest, res: Resp
   const { enrollmentId } = req.params;
 
   const enrollment = await Enrollment.findById(enrollmentId)
-    .populate("studentId", "firstName lastName email cohort profileImage")
-    .populate({
-      path: "program",
-      populate: {
-        path: "courses",
-        select: "title description order estimatedHours"
-      }
-    });
+    .populate("studentId", "firstName lastName email profileImage studentProfile")
+    .populate("programId", "title description slug estimatedHours coverImage");
 
   if (!enrollment) {
     res.status(404).json({ success: false, error: "Enrollment not found" });
     return;
   }
 
-  // Get progress data
+  const program = enrollment.programId as any;
+  const courses = await Course.find({ programId: program._id })
+    .select("title description order estimatedHours")
+    .sort({ order: 1 });
+
+  // Program-level progress
   const progress = await Progress.findOne({
     studentId: enrollment.studentId._id,
-    programId: enrollment.program._id
+    programId: program._id
   });
 
-  res.status(200).json({ 
-    success: true, 
+  res.status(200).json({
+    success: true,
     data: {
-      enrollment,
+      enrollment: {
+        ...enrollment.toObject(),
+        programId: {
+          ...program.toObject(),
+          courses
+        }
+      },
       progress
     }
   });
@@ -1056,7 +1002,7 @@ export const updateEnrollmentStatus = asyncHandler(async (req: AuthRequest, res:
 
   const enrollment = await Enrollment.findById(enrollmentId)
     .populate('studentId', 'firstName lastName')
-    .populate('program', 'title');
+    .populate('programId', 'title');
 
   if (!enrollment) {
     res.status(404).json({ success: false, error: "Enrollment not found" });
@@ -1064,7 +1010,7 @@ export const updateEnrollmentStatus = asyncHandler(async (req: AuthRequest, res:
   }
 
   const oldStatus = enrollment.status;
-  
+
   if (status) enrollment.status = status;
   if (completionDate) enrollment.completionDate = completionDate;
   if (dropDate) enrollment.dropDate = dropDate;
@@ -1072,11 +1018,10 @@ export const updateEnrollmentStatus = asyncHandler(async (req: AuthRequest, res:
 
   await enrollment.save();
 
-  // Notify student if status changed
   if (status && status !== oldStatus) {
     const student = enrollment.studentId as any;
-    const program = enrollment.program as any;
-    
+    const program = enrollment.programId as any;
+
     let notificationMessage = '';
     let notificationType = NotificationType.COURSE_UPDATE;
 
@@ -1104,10 +1049,9 @@ export const updateEnrollmentStatus = asyncHandler(async (req: AuthRequest, res:
       title: "Enrollment Status Updated",
       message: notificationMessage,
       relatedId: program._id,
-      relatedModel: "Course",
+      relatedModel: "Program",
     });
 
-    // Emit real-time notification
     const io = getIo();
     io.to(student._id.toString()).emit("notification", {
       type: notificationType,
@@ -1129,35 +1073,29 @@ export const updateCourseProgress = asyncHandler(async (req: AuthRequest, res: R
   const { status, lessonsCompleted, completionDate } = req.body;
 
   const enrollment = await Enrollment.findById(enrollmentId)
-    .populate('program', 'title');
+    .populate('programId', 'title');
 
   if (!enrollment) {
     res.status(404).json({ success: false, error: "Enrollment not found" });
     return;
   }
 
-  // Find the course progress entry
-  const courseProgressIndex = enrollment.coursesProgress.findIndex(
-    cp => cp.course.toString() === courseId
-  );
-
-  if (courseProgressIndex === -1) {
+  const idx = enrollment.coursesProgress.findIndex(cp => cp.courseId.toString() === courseId);
+  if (idx === -1) {
     res.status(404).json({ success: false, error: "Course not found in enrollment" });
     return;
   }
 
-  // Update course progress
-  if (status) enrollment.coursesProgress[courseProgressIndex].status = status;
+  if (status) enrollment.coursesProgress[idx].status = status;
   if (lessonsCompleted !== undefined) {
-    enrollment.coursesProgress[courseProgressIndex].lessonsCompleted = lessonsCompleted;
+    enrollment.coursesProgress[idx].lessonsCompleted = lessonsCompleted;
   }
   if (completionDate) {
-    enrollment.coursesProgress[courseProgressIndex].completionDate = completionDate;
+    enrollment.coursesProgress[idx].completionDate = completionDate;
   }
 
   await enrollment.save();
 
-  // Check if all courses are completed
   const allCoursesCompleted = enrollment.coursesProgress.every(
     cp => cp.status === EnrollmentStatus.COMPLETED
   );
@@ -1167,24 +1105,23 @@ export const updateCourseProgress = asyncHandler(async (req: AuthRequest, res: R
     enrollment.completionDate = new Date();
     await enrollment.save();
 
-    // Notify student of program completion
     const student = enrollment.studentId as any;
-    const program = enrollment.program as any;
+    const program = enrollment.programId as any;
 
     await pushNotification({
       userId: student._id,
       type: NotificationType.CERTIFICATE_ISSUED,
       title: "Program Completed!",
       message: `Congratulations! You have completed all courses in ${program.title}`,
-      relatedId: enrollment.program._id,
-      relatedModel: "Course",
+      relatedId: program._id,
+      relatedModel: "Program",
     });
   }
 
-  res.status(200).json({ 
-    success: true, 
-    message: "Course progress updated", 
-    data: enrollment 
+  res.status(200).json({
+    success: true,
+    message: "Course progress updated",
+    data: enrollment
   });
 });
 
@@ -1196,7 +1133,7 @@ export const deleteEnrollment = asyncHandler(async (req: AuthRequest, res: Respo
 
   const enrollment = await Enrollment.findById(enrollmentId)
     .populate('studentId', 'firstName lastName')
-    .populate('program', 'title');
+    .populate('programId', 'title');
 
   if (!enrollment) {
     res.status(404).json({ success: false, error: "Enrollment not found" });
@@ -1204,9 +1141,16 @@ export const deleteEnrollment = asyncHandler(async (req: AuthRequest, res: Respo
   }
 
   const student = enrollment.studentId as any;
-  const program = enrollment.program as any;
+  const program = enrollment.programId as any;
 
-  // Delete associated progress records
+  // ✅ DECREMENT currentEnrollment for each course
+  const courseIds = enrollment.coursesProgress.map(cp => cp.courseId);
+  await Course.updateMany(
+    { _id: { $in: courseIds } },
+    { $inc: { currentEnrollment: -1 } }
+  );
+
+  // Delete associated progress records for this program
   await Progress.deleteMany({
     studentId: student._id,
     programId: program._id
@@ -1214,14 +1158,13 @@ export const deleteEnrollment = asyncHandler(async (req: AuthRequest, res: Respo
 
   await enrollment.deleteOne();
 
-  // Notify student about enrollment removal
   await pushNotification({
     userId: student._id,
     type: NotificationType.COURSE_UPDATE,
     title: "Enrollment Removed",
     message: `Your enrollment in ${program.title} has been removed`,
     relatedId: program._id,
-    relatedModel: "Course",
+    relatedModel: "Program",
   });
 
   res.status(200).json({ success: true, message: "Enrollment deleted successfully" });
@@ -1233,8 +1176,16 @@ export const deleteEnrollment = asyncHandler(async (req: AuthRequest, res: Respo
 export const getEnrollmentStats = asyncHandler(async (req: AuthRequest, res: Response) => {
   const { programId } = req.query;
 
+  console.log('📊 Getting enrollment stats for programId:', programId);
+
   const filter: any = {};
-  if (programId) filter.program = programId;
+  if (programId) filter.programId = programId;
+
+  console.log('🔍 Filter:', JSON.stringify(filter));
+
+  const allEnrollments = await Enrollment.find(filter);
+  console.log('📋 Found enrollments:', allEnrollments.length);
+  console.log('📋 Sample enrollment:', allEnrollments[0]);
 
   const totalEnrollments = await Enrollment.countDocuments(filter);
   const activeEnrollments = await Enrollment.countDocuments({ ...filter, status: EnrollmentStatus.ACTIVE });
@@ -1243,8 +1194,17 @@ export const getEnrollmentStats = asyncHandler(async (req: AuthRequest, res: Res
   const droppedEnrollments = await Enrollment.countDocuments({ ...filter, status: EnrollmentStatus.DROPPED });
   const suspendedEnrollments = await Enrollment.countDocuments({ ...filter, status: EnrollmentStatus.SUSPENDED });
 
-  const completionRate = totalEnrollments > 0 
-    ? (completedEnrollments / totalEnrollments) * 100 
+  console.log('📊 Stats:', {
+    total: totalEnrollments,
+    active: activeEnrollments,
+    completed: completedEnrollments,
+    pending: pendingEnrollments,
+    dropped: droppedEnrollments,
+    suspended: suspendedEnrollments
+  });
+
+  const completionRate = totalEnrollments > 0
+    ? (completedEnrollments / totalEnrollments) * 100
     : 0;
 
   res.status(200).json({

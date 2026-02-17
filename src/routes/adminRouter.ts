@@ -45,6 +45,7 @@ import {
 import { protect } from '../middlewares/auth';
 import { authorize } from '../middlewares/adminAuth';
 import { UserRole } from '../models/user';
+import { get } from 'http';
 
 const adminRouter = express.Router();
 
@@ -54,7 +55,14 @@ adminRouter.use(protect);
 // PROGRAM MANAGEMENT (Admin Only)
 // ============================================
 
-adminRouter.get('/')
+
+adminRouter.get('/programs', authorize(UserRole.ADMIN), getAllPrograms);
+adminRouter.post('/programs', authorize(UserRole.ADMIN), createProgram);
+adminRouter.get('/programs/:id', authorize(UserRole.ADMIN), getProgramById);
+adminRouter.put('/programs/:id', authorize(UserRole.ADMIN), updateProgram);
+adminRouter.delete('/programs/:id', authorize(UserRole.ADMIN), deleteProgram);
+adminRouter.get('/programs/:id/progress', authorize(UserRole.ADMIN), getProgramProgress);
+
 
 // ============================================
 // USER MANAGEMENT (Admin Only)

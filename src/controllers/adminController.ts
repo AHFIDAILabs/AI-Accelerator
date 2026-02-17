@@ -35,7 +35,8 @@ export const getAllUsers = asyncHandler(
     const filter: any = {};
     if (role) filter.role = role;
     if (status) filter.status = status;
-    if (cohort) filter.cohort = cohort;
+    // cohort lives under studentProfile.cohort, not at root
+    if (cohort) filter['studentProfile.cohort'] = cohort;
 
     // Create query
     let query = User.find(filter).select('-password -refreshTokens -accessToken');
@@ -80,9 +81,14 @@ export const getUserById = asyncHandler(
       return;
     }
 
-    // Get additional user data
-    const enrollments = await Enrollment.find({ studentId: user._id }).populate('courseId', 'title');
-    const progress = await Progress.find({ studentId: user._id });
+    // Enrollment model: programId + coursesProgress.courseId
+    const enrollments = await Enrollment.find({ studentId: user._id })
+      .populate('programId', 'title')
+      .populate('coursesProgress.courseId', 'title');
+
+    const progress = await Progress.find({ studentId: user._id })
+      .populate('courseId', 'title');
+
     const certificates = await Certificate.find({ studentId: user._id });
 
     res.status(200).json({
@@ -115,8 +121,14 @@ export const updateUser = asyncHandler(
     if (firstName) user.firstName = firstName;
     if (lastName) user.lastName = lastName;
     if (email) user.email = email;
-    if (cohort !== undefined && user.studentProfile) user.studentProfile.cohort = cohort;
     if (phoneNumber !== undefined) user.phoneNumber = phoneNumber;
+
+    // cohort is inside studentProfile
+    if (cohort !== undefined) {
+      user.studentProfile = user.studentProfile || {};
+      user.studentProfile.cohort = cohort;
+    }
+
     if (role && Object.values(UserRole).includes(role)) user.role = role;
     if (status && Object.values(UserStatus).includes(status)) user.status = status;
 
@@ -125,14 +137,14 @@ export const updateUser = asyncHandler(
     // Push real-time notification
     const notification = await pushNotification({
       userId: user._id,
-      type: NotificationType.ANNOUNCEMENT, // Or a more specific type
+      type: NotificationType.ANNOUNCEMENT,
       title: 'Profile Updated',
       message: `Your profile has been updated by an admin.`,
     });
 
     io.to(user._id.toString()).emit('notification', notification);
 
-   return res.status(200).json({
+    return res.status(200).json({
       success: true,
       message: 'User updated successfully',
       data: user,
@@ -277,7 +289,7 @@ export const getAllStudents = asyncHandler(
 
     const filter: any = { role: UserRole.STUDENT };
     if (status) filter.status = status;
-    if (cohort) filter.cohort = cohort;
+    if (cohort) filter['studentProfile.cohort'] = cohort;
 
     let query = User.find(filter).select('-password -refreshTokens -accessToken');
 
@@ -316,11 +328,13 @@ export const getStudentProgress = asyncHandler(
     }
 
     const progress = await Progress.find({ studentId: student._id })
-      .populate('courseId', 'title duration')
+      .populate('courseId', 'title estimatedHours')
       .populate('modules.moduleId', 'title weekNumber');
 
+    // Enrollment does not have top-level courseId; populate programId + coursesProgress.courseId
     const enrollments = await Enrollment.find({ studentId: student._id })
-      .populate('courseId', 'title');
+      .populate('programId', 'title')
+      .populate('coursesProgress.courseId', 'title');
 
     res.status(200).json({
       success: true,
@@ -449,22 +463,23 @@ export const getDashboardStats = asyncHandler(
 
     // Enrollment statistics
     const totalEnrollments = await Enrollment.countDocuments();
-    const activeEnrollments = await Enrollment.countDocuments({ status: 'active' });
-    const completedEnrollments = await Enrollment.countDocuments({ status: 'completed' });
+    const activeEnrollments = await Enrollment.countDocuments({ status: EnrollmentStatus.ACTIVE });
+    const completedEnrollments = await Enrollment.countDocuments({ status: EnrollmentStatus.COMPLETED });
 
     // Certificate statistics
     const totalCertificates = await Certificate.countDocuments();
     const issuedCertificates = await Certificate.countDocuments({ status: 'issued' });
 
     // Recent activity
+    // User doesn't have top-level enrollmentDate; use createdAt (and studentProfile.enrollmentDate if needed on UI)
     const recentUsers = await User.find()
-      .select('firstName lastName email role enrollmentDate')
-      .sort({ enrollmentDate: -1 })
+      .select('firstName lastName email role createdAt')
+      .sort({ createdAt: -1 })
       .limit(5);
 
     const recentEnrollments = await Enrollment.find()
-       .populate('studentId', 'firstName lastName email profileImage')
-  .populate('program', 'title price currency')
+      .populate('studentId', 'firstName lastName email profileImage')
+      .populate('programId', 'title price currency')
       .populate('coursesProgress.courseId', 'title description')
       .sort({ enrollmentDate: -1 })
       .limit(5);
@@ -505,16 +520,16 @@ export const getDashboardStats = asyncHandler(
 // BULK OPERATIONS
 // ============================================
 
-// @desc    Bulk enroll students to a course
+// @desc    Bulk enroll students to a program
 // @route   POST /api/admin/bulk/enroll
 // @access  Admin only
 export const bulkEnrollStudents = asyncHandler(
   async (req: AuthRequest, res: Response) => {
-    const { studentIds, programId, cohort } = req.body; // Changed from courseId to programId
+    const { studentIds, programId, cohort } = req.body; // programId-based bulk
     const io = getIo();
-    
-    // Validate program instead of course
-    const program = await Program.findById(programId).populate('courses');
+
+    // Validate program
+    const program = await Program.findById(programId);
     if (!program) {
       return res.status(404).json({ success: false, error: 'Program not found' });
     }
@@ -523,15 +538,18 @@ export const bulkEnrollStudents = asyncHandler(
       return res.status(400).json({ success: false, error: 'Program is not published' });
     }
 
-    const enrollments = [];
-    const errors = [];
+    // Fetch courses under this program (no reliance on Program.courses)
+    const programCourses = await Course.find({ programId }).select('_id title');
+
+    const enrollments: any[] = [];
+    const errors: any[] = [];
 
     for (const studentId of studentIds) {
       try {
         const student = await User.findById(studentId);
         if (!student || student.role !== UserRole.STUDENT) {
-          errors.push({ 
-            studentId, 
+          errors.push({
+            studentId,
             error: 'Student not found or invalid role',
             email: student?.email || 'N/A'
           });
@@ -539,14 +557,14 @@ export const bulkEnrollStudents = asyncHandler(
         }
 
         // Check if already enrolled in this PROGRAM
-        const existingEnrollment = await Enrollment.findOne({ 
-          studentId, 
-          program: programId 
+        const existingEnrollment = await Enrollment.findOne({
+          studentId,
+          programId
         });
-        
+
         if (existingEnrollment) {
-          errors.push({ 
-            studentId, 
+          errors.push({
+            studentId,
             error: 'Already enrolled in this program',
             email: student.email
           });
@@ -555,14 +573,14 @@ export const bulkEnrollStudents = asyncHandler(
 
         // Check enrollment limit
         if (program.enrollmentLimit) {
-          const currentEnrollments = await Enrollment.countDocuments({ 
-            program: programId, 
+          const currentEnrollments = await Enrollment.countDocuments({
+            programId,
             status: { $in: [EnrollmentStatus.PENDING, EnrollmentStatus.ACTIVE] }
           });
-          
+
           if (currentEnrollments >= program.enrollmentLimit) {
-            errors.push({ 
-              studentId, 
+            errors.push({
+              studentId,
               error: 'Program enrollment limit reached',
               email: student.email
             });
@@ -570,21 +588,17 @@ export const bulkEnrollStudents = asyncHandler(
           }
         }
 
-        // Initialize courses progress for all courses in program
+        // Initialize coursesProgress for all courses in the program
         const coursesProgress = await Promise.all(
-          program.courses.map(async (courseId) => {
-            const course = await Course.findById(courseId);
-            if (!course) return null;
-
-            const modules = await Module.find({ course: courseId });
+          programCourses.map(async (c) => {
+            const modules = await Module.find({ courseId: c._id }).select('_id');
             const moduleIds = modules.map(m => m._id);
-            const totalLessons = await Lesson.countDocuments({ 
-              module: { $in: moduleIds } 
+            const totalLessons = await Lesson.countDocuments({
+              moduleId: { $in: moduleIds }
             });
 
             return {
-              course: courseId,
-              courseId: courseId, // For compatibility
+              courseId: c._id,
               status: EnrollmentStatus.PENDING,
               lessonsCompleted: 0,
               totalLessons
@@ -592,32 +606,30 @@ export const bulkEnrollStudents = asyncHandler(
           })
         );
 
-        const validCoursesProgress = coursesProgress.filter(cp => cp !== null);
-
-        // Create enrollment with program reference
+        // Create enrollment with programId reference
         const enrollment = await Enrollment.create({
           studentId,
-          program: programId,
+          programId,
           status: EnrollmentStatus.ACTIVE,
           cohort: cohort || student.studentProfile?.cohort,
           notes: `Bulk enrolled by admin`,
-          coursesProgress: validCoursesProgress
+          coursesProgress
         });
 
-        // Create program-level progress tracker
+        // Create program-level progress tracker (no courseId)
         await Progress.create({
           studentId,
           programId,
           modules: [],
           overallProgress: 0,
           completedLessons: 0,
-          totalLessons: validCoursesProgress.reduce((sum, cp) => sum + cp.totalLessons, 0),
+          totalLessons: coursesProgress.reduce((sum, cp) => sum + (cp.totalLessons || 0), 0),
           completedAssessments: 0,
           totalAssessments: 0,
           averageScore: 0,
           totalTimeSpent: 0,
           completedCourses: 0,
-          totalCourses: program.courses.length,
+          totalCourses: programCourses.length,
           enrolledAt: new Date()
         });
 
@@ -635,20 +647,20 @@ export const bulkEnrollStudents = asyncHandler(
           title: 'Program Enrollment',
           message: `You have been enrolled in ${program.title}`,
           relatedId: program._id,
-          relatedModel: 'Course', // You might want to change this to 'Program'
+          relatedModel: 'Program', // ✅ use Program
         });
-        
+
         io.to(student._id.toString()).emit('notification', {
           type: NotificationType.COURSE_UPDATE,
           title: 'Successfully Enrolled',
-          message: `Welcome to ${program.title}! You now have access to ${program.courses.length} courses.`,
+          message: `Welcome to ${program.title}! You now have access to ${programCourses.length} courses.`,
           programId: program._id,
           timestamp: new Date(),
         });
 
       } catch (error: any) {
-        errors.push({ 
-          studentId, 
+        errors.push({
+          studentId,
           error: error.message,
           email: 'Error fetching email'
         });
@@ -658,11 +670,11 @@ export const bulkEnrollStudents = asyncHandler(
     return res.status(200).json({
       success: true,
       message: `Bulk enrollment completed: ${enrollments.length} successful, ${errors.length} failed`,
-      data: { 
-        enrolled: enrollments.length, 
-        failed: errors.length, 
-        enrollments, 
-        errors 
+      data: {
+        enrolled: enrollments.length,
+        failed: errors.length,
+        enrollments,
+        errors
       },
     });
   }
@@ -719,7 +731,7 @@ export const getUserActivityReport = asyncHandler(
     const { startDate, endDate, cohort } = req.query;
 
     const filter: any = {};
-    if (cohort) filter.cohort = cohort;
+    if (cohort) filter['studentProfile.cohort'] = cohort;
     if (startDate || endDate) {
       filter.lastLogin = {};
       if (startDate) filter.lastLogin.$gte = new Date(startDate as string);
@@ -727,7 +739,7 @@ export const getUserActivityReport = asyncHandler(
     }
 
     const users = await User.find(filter)
-      .select('firstName lastName email role cohort lastLogin enrollmentDate')
+      .select('firstName lastName email role studentProfile.cohort lastLogin createdAt')
       .sort({ lastLogin: -1 });
 
     res.status(200).json({
@@ -749,7 +761,7 @@ export const getCourseCompletionReport = asyncHandler(
     if (courseId) filter.courseId = courseId;
 
     const completionData = await Progress.find(filter)
-      .populate('studentId', 'firstName lastName email cohort')
+      .populate('studentId', 'firstName lastName email studentProfile.cohort')
       .populate('courseId', 'title')
       .select('overallProgress completedLessons totalLessons averageScore completedAt');
 
@@ -770,14 +782,14 @@ export const getCourseCompletionReport = asyncHandler(
 // @route   POST /api/admin/programs
 // @access  Admin
 export const createProgram = asyncHandler(async (req: AuthRequest, res: Response) => {
-  const { title, description, courseIds, isPublished } = req.body;
+  const { title, description, isPublished, ...rest } = req.body;
 
   const program = await Program.create({
     title,
     description,
-    courseIds,
     isPublished: !!isPublished,
     createdBy: req.user?._id,
+    ...rest
   });
 
   res.status(201).json({
@@ -793,21 +805,37 @@ export const createProgram = asyncHandler(async (req: AuthRequest, res: Response
 export const getAllPrograms = asyncHandler(async (req: AuthRequest, res: Response) => {
   const { search, isPublished, page = '1', limit = '10' } = req.query;
 
-  let query = Program.find(isPublished !== undefined ? { isPublished } : {});
+  const filter: any = {};
+  if (isPublished !== undefined) filter.isPublished = isPublished === 'true';
+
+  let query = Program.find(filter);
   const queryHelper = new QueryHelper(query, req.query);
   queryHelper.search(['title', 'description']);
   query = queryHelper.sort().paginate().query;
 
-  const total = await Program.countDocuments();
-  const programs = await query.populate('courseIds', 'title');
+  const total = await Program.countDocuments(filter);
+  const programs = await query.lean();
+
+  // Attach a courseCount by querying courses per program (optional; avoid n+1 with aggregation if needed)
+  const programIds = programs.map(p => p._id);
+  const counts = await Course.aggregate([
+    { $match: { programId: { $in: programIds } } },
+    { $group: { _id: '$programId', count: { $sum: 1 } } }
+  ]);
+  const countMap = new Map<string, number>(counts.map(c => [c._id.toString(), c.count]));
+
+  const out = programs.map(p => ({
+    ...p,
+    courseCount: countMap.get(p._id.toString()) || 0
+  }));
 
   res.status(200).json({
     success: true,
-    count: programs.length,
+    count: out.length,
     total,
     page: parseInt(page as string),
     pages: Math.ceil(total / parseInt(limit as string)),
-    data: programs,
+    data: out,
   });
 });
 
@@ -815,13 +843,18 @@ export const getAllPrograms = asyncHandler(async (req: AuthRequest, res: Respons
 // @route   GET /api/admin/programs/:id
 // @access  Admin
 export const getProgramById = asyncHandler(async (req: AuthRequest, res: Response) => {
-  const program = await Program.findById(req.params.id).populate('courseIds', 'title description isPublished');
+  const program = await Program.findById(req.params.id);
 
   if (!program) return res.status(404).json({ success: false, error: 'Program not found' });
 
+  // Also fetch its courses for convenience
+  const courses = await Course.find({ programId: program._id })
+    .select('title description isPublished order estimatedHours coverImage')
+    .sort({ order: 1 });
+
   return res.status(200).json({
     success: true,
-    data: program,
+    data: { program, courses },
   });
 });
 
@@ -829,21 +862,28 @@ export const getProgramById = asyncHandler(async (req: AuthRequest, res: Respons
 // @route   PUT /api/admin/programs/:id
 // @access  Admin
 export const updateProgram = asyncHandler(async (req: AuthRequest, res: Response) => {
-  const { title, description, courses, isPublished } = req.body;
+  const { title, description, courses, isPublished, ...rest } = req.body;
   const program = await Program.findById(req.params.id);
   if (!program) return res.status(404).json({ success: false, error: 'Program not found' });
 
   if (title) program.title = title;
   if (description) program.description = description;
-  // Update course IDs and note: we have courses as type objectId array
-if (courses && Array.isArray(courses)) {
-    program.courses = courses.map((c: string) => new mongoose.Types.ObjectId(c));
-  }
   if (isPublished !== undefined) program.isPublished = isPublished;
+
+  // Optional: If client provides `courses` (array of courseIds), associate them with this program
+  if (Array.isArray(courses) && courses.length > 0) {
+    const courseIds = courses.map((c: string) => new mongoose.Types.ObjectId(c));
+    await Course.updateMany(
+      { _id: { $in: courseIds } },
+      { $set: { programId: program._id } }
+    );
+  }
+
+  Object.assign(program, rest);
 
   await program.save();
 
- return res.status(200).json({
+  return res.status(200).json({
     success: true,
     message: 'Program updated successfully',
     data: program,
@@ -857,9 +897,12 @@ export const deleteProgram = asyncHandler(async (req: AuthRequest, res: Response
   const program = await Program.findById(req.params.id);
   if (!program) return res.status(404).json({ success: false, error: 'Program not found' });
 
+  // Optional: Safety check - ensure no courses remain linked (or detach them)
+  await Course.updateMany({ programId: program._id }, { $unset: { programId: '' } });
+
   await program.deleteOne();
 
- return res.status(200).json({
+  return res.status(200).json({
     success: true,
     message: 'Program deleted successfully',
   });
@@ -875,41 +918,38 @@ export const deleteProgram = asyncHandler(async (req: AuthRequest, res: Response
 export const getProgramProgress = asyncHandler(async (req: AuthRequest, res: Response) => {
   const programId = req.params.id;
 
-  // Fetch program with courses
-  const program = await Program.findById(programId).populate('courses', 'title');
+  const program = await Program.findById(programId);
   if (!program) {
     return res.status(404).json({ success: false, error: 'Program not found' });
   }
 
-  const courseIds = program.courses.map((c: any) => c._id);
+  const courses = await Course.find({ programId: program._id }).select('_id title');
+  const courseIds = courses.map(c => c._id);
 
-  // Get all enrollments for the program courses
-  const enrollments = await Enrollment.find({ program: program._id })
+  const enrollments = await Enrollment.find({ programId: program._id })
     .populate('studentId', 'firstName lastName email');
 
-  // Fetch all progress in a single query for efficiency
   const studentIds = enrollments.map(e => e.studentId._id);
   const progressList = await Progress.find({
     studentId: { $in: studentIds },
     courseId: { $in: courseIds },
   });
 
-  // Map progress to each enrollment
   const studentProgress = enrollments.map(enrollment => {
-    const studentCourseProgress = progressList.filter(
-      p => p.studentId.toString() === enrollment.studentId._id.toString()
-    ).map(p => ({
-      course: p.courseId,
-      overallProgress: p.overallProgress,
-      completedLessons: p.completedLessons,
-      totalLessons: p.totalLessons,
-      completedAssessments: p.completedAssessments,
-      totalAssessments: p.totalAssessments,
-      averageScore: p.averageScore,
-      totalTimeSpent: p.totalTimeSpent,
-      lastAccessedAt: p.lastAccessedAt,
-      completedAt: p.completedAt,
-    }));
+    const studentCourseProgress = progressList
+      .filter(p => p.studentId.toString() === enrollment.studentId._id.toString())
+      .map(p => ({
+        course: p.courseId,
+        overallProgress: p.overallProgress,
+        completedLessons: p.completedLessons,
+        totalLessons: p.totalLessons,
+        completedAssessments: p.completedAssessments,
+        totalAssessments: p.totalAssessments,
+        averageScore: p.averageScore,
+        totalTimeSpent: p.totalTimeSpent,
+        lastAccessedAt: p.lastAccessedAt,
+        completedAt: p.completedAt,
+      }));
 
     return {
       student: enrollment.studentId,
@@ -935,18 +975,9 @@ export const getProgramProgress = asyncHandler(async (req: AuthRequest, res: Res
 export const getAdminCourseById = asyncHandler(
   async (req: AuthRequest, res: Response) => {
     const course = await Course.findById(req.params.id)
-      .populate('program', 'title description slug')
-      .populate('instructor', 'firstName lastName email profileImage')
-      .populate('createdBy', 'firstName lastName email profileImage')
-      .populate({
-        path: 'modules',
-        options: { sort: { order: 1 } },
-        populate: {
-          path: 'lessons',
-          options: { sort: { order: 1 } },
-          select: 'title type order estimatedMinutes isPublished description'
-        }
-      });
+      .populate('programId', 'title description slug')
+      .populate('instructorId', 'firstName lastName email profileImage')
+      .populate('createdBy', 'firstName lastName email profileImage');
 
     if (!course) {
       return res.status(404).json({
@@ -955,15 +986,39 @@ export const getAdminCourseById = asyncHandler(
       });
     }
 
-    // Calculate stats from populated modules
-    const modules = course.modules || [];
+    // Fetch modules and lessons explicitly (no reliance on Course.modules virtual in schema)
+    const modules = await Module.find({ courseId: course._id })
+      .sort({ order: 1 })
+      .lean();
+
+    const moduleIds = modules.map(m => m._id);
+    const lessons = await Lesson.find({ moduleId: { $in: moduleIds } })
+      .sort({ order: 1 })
+      .select('title type order estimatedMinutes isPublished description moduleId')
+      .lean();
+
+    // Attach lessons to their modules
+    const lessonsByModule = lessons.reduce((acc: Record<string, any[]>, lesson) => {
+      const key = (lesson.moduleId as any).toString();
+      if (!acc[key]) acc[key] = [];
+      acc[key].push(lesson);
+      return acc;
+    }, {});
+
+    const modulesWithLessons = modules.map(m => ({
+      ...m,
+      lessons: lessonsByModule[m._id.toString()] || []
+    }));
+
+    // Calculate stats from collected modules/lessons
     const stats = {
-      totalModules: modules.length,
-      totalLessons: modules.reduce((sum: number, m: any) => 
-        sum + (m.lessons?.length || 0), 0),
-      totalDuration: modules.reduce((sum: number, m: any) => {
-        const moduleDuration = m.lessons?.reduce((lessonSum: number, lesson: any) => 
-          lessonSum + (lesson.estimatedMinutes || 0), 0) || 0;
+      totalModules: modulesWithLessons.length,
+      totalLessons: modulesWithLessons.reduce((sum, m: any) => sum + (m.lessons?.length || 0), 0),
+      totalDuration: modulesWithLessons.reduce((sum: number, m: any) => {
+        const moduleDuration = (m.lessons || []).reduce(
+          (lessonSum: number, lesson: any) => lessonSum + (lesson.estimatedMinutes || 0),
+          0
+        );
         return sum + moduleDuration;
       }, 0)
     };
@@ -972,6 +1027,7 @@ export const getAdminCourseById = asyncHandler(
       success: true,
       data: {
         ...course.toObject(),
+        modules: modulesWithLessons,
         stats
       }
     });

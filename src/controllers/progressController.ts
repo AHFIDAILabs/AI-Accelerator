@@ -30,37 +30,40 @@ export const getProgramProgress = asyncHandler(async (req: AuthRequest, res: Res
 
   const enrollment = await Enrollment.findOne({
     studentId: req.user._id,
-    program: programId
+    programId
   }).populate({
-    path: 'program',
-    select: 'title courses'
+    path: 'programId',
+    select: 'title'
   });
 
   if (!enrollment) {
-    res.status(404).json({ 
-      success: false, 
-      error: "Not enrolled in this program" 
+    res.status(404).json({
+      success: false,
+      error: "Not enrolled in this program"
     });
     return;
   }
 
-  // Get progress for all courses in the program
+  // Use the enrollment's course progress list for the courses in this program
+  const courseIds = enrollment.coursesProgress.map(cp => cp.courseId);
+
+  // Get progress for all courses in the program for this student
   const courseProgress = await Progress.find({
     studentId: req.user._id,
-    courseId: { $in: (enrollment.program as any).courses }
+    courseId: { $in: courseIds }
   }).populate('courseId', 'title order estimatedHours');
 
   // Calculate overall program statistics
-  const totalProgress = courseProgress.reduce((sum, cp) => sum + cp.overallProgress, 0);
-  const averageProgress = courseProgress.length > 0 
-    ? totalProgress / courseProgress.length 
+  const totalProgress = courseProgress.reduce((sum, cp) => sum + (cp.overallProgress || 0), 0);
+  const averageProgress = courseProgress.length > 0
+    ? totalProgress / courseProgress.length
     : 0;
 
-  const totalLessons = courseProgress.reduce((sum, cp) => sum + cp.totalLessons, 0);
-  const completedLessons = courseProgress.reduce((sum, cp) => sum + cp.completedLessons, 0);
+  const totalLessons = courseProgress.reduce((sum, cp) => sum + (cp.totalLessons || 0), 0);
+  const completedLessons = courseProgress.reduce((sum, cp) => sum + (cp.completedLessons || 0), 0);
 
-  const totalAssessments = courseProgress.reduce((sum, cp) => sum + cp.totalAssessments, 0);
-  const completedAssessments = courseProgress.reduce((sum, cp) => sum + cp.completedAssessments, 0);
+  const totalAssessments = courseProgress.reduce((sum, cp) => sum + (cp.totalAssessments || 0), 0);
+  const completedAssessments = courseProgress.reduce((sum, cp) => sum + (cp.completedAssessments || 0), 0);
 
   const completedCourses = enrollment.coursesProgress.filter(
     cp => cp.status === EnrollmentStatus.COMPLETED
@@ -99,20 +102,20 @@ export const getCourseProgress = asyncHandler(async (req: AuthRequest, res: Resp
     studentId: req.user._id,
     courseId: courseId
   })
-  .populate('courseId', 'title description program estimatedHours')
-  .populate('programId', 'title')
-  .populate({
-    path: 'modules.moduleId',
-    select: 'title description order sequenceLabel type'
-  })
-  .populate({
-    path: 'modules.lessons.lessonId',
-    select: 'title type estimatedMinutes order'
-  })
-  .populate({
-    path: 'modules.assessments.assessmentId',
-    select: 'title type totalPoints passingScore'
-  });
+    .populate('courseId', 'title description programId estimatedHours')
+    .populate('programId', 'title')
+    .populate({
+      path: 'modules.moduleId',
+      select: 'title description order sequenceLabel type'
+    })
+    .populate({
+      path: 'modules.lessons.lessonId',
+      select: 'title type estimatedMinutes order'
+    })
+    .populate({
+      path: 'modules.assessments.assessmentId',
+      select: 'title type totalPoints passingScore'
+    });
 
   if (!progress) {
     res.status(404).json({
@@ -144,7 +147,7 @@ export const getModuleProgress = asyncHandler(async (req: AuthRequest, res: Resp
 
   const progress = await Progress.findOne({
     studentId: req.user._id,
-    courseId: module.course
+    courseId: module.courseId
   });
 
   if (!progress) {
@@ -174,9 +177,9 @@ export const getModuleProgress = asyncHandler(async (req: AuthRequest, res: Resp
     { path: 'assessments.assessmentId', select: 'title type totalPoints passingScore' }
   ]);
 
-  res.status(200).json({ 
-    success: true, 
-    data: populatedModule 
+  res.status(200).json({
+    success: true,
+    data: populatedModule
   });
 });
 
@@ -197,13 +200,13 @@ export const startLesson = asyncHandler(async (req: AuthRequest, res: Response) 
     return;
   }
 
-  const module = await Module.findById(lesson.module);
+  const module = await Module.findById(lesson.moduleId);
   if (!module) {
     res.status(404).json({ success: false, error: "Module not found" });
     return;
   }
 
-  const course = await Course.findById(module.course);
+  const course = await Course.findById(module.courseId);
   if (!course) {
     res.status(404).json({ success: false, error: "Course not found" });
     return;
@@ -211,26 +214,26 @@ export const startLesson = asyncHandler(async (req: AuthRequest, res: Response) 
 
   let progress = await Progress.findOne({
     studentId: req.user._id,
-    courseId: module.course
+    courseId: module.courseId
   });
 
   if (!progress) {
     // Initialize progress if it doesn't exist
-    const modules = await Module.find({ course: module.course });
+    const modules = await Module.find({ courseId: module.courseId });
     const moduleIds = modules.map(m => m._id);
-    const totalLessons = await Lesson.countDocuments({ 
-      module: { $in: moduleIds },
+    const totalLessons = await Lesson.countDocuments({
+      moduleId: { $in: moduleIds },
       isPublished: true
     });
     const totalAssessments = await Assessment.countDocuments({
-      courseId: module.course,
+      courseId: module.courseId,
       isPublished: true
     });
 
     progress = await Progress.create({
       studentId: req.user._id,
-      courseId: module.course,
-      programId: course.program,
+      courseId: module.courseId,
+      programId: course.programId,
       modules: [],
       overallProgress: 0,
       completedLessons: 0,
@@ -239,16 +242,18 @@ export const startLesson = asyncHandler(async (req: AuthRequest, res: Response) 
       totalAssessments,
       averageScore: 0,
       totalTimeSpent: 0,
+      enrolledAt: new Date(),
+      lastAccessedAt: new Date()
     });
   }
 
   let moduleProgress = progress.modules.find(
-    m => m.moduleId.toString() === lesson.module.toString()
+    m => m.moduleId.toString() === lesson.moduleId.toString()
   );
 
   if (!moduleProgress) {
     moduleProgress = {
-      moduleId: lesson.module,
+      moduleId: lesson.moduleId,
       lessons: [],
       assessments: [],
       completionPercentage: 0,
@@ -302,13 +307,13 @@ export const completeLesson = asyncHandler(async (req: AuthRequest, res: Respons
     return;
   }
 
-  const module = await Module.findById(lesson.module);
+  const module = await Module.findById(lesson.moduleId);
   if (!module) {
     res.status(404).json({ success: false, error: "Module not found" });
     return;
   }
 
-  const course = await Course.findById(module.course);
+  const course = await Course.findById(module.courseId);
   if (!course) {
     res.status(404).json({ success: false, error: "Course not found" });
     return;
@@ -316,7 +321,7 @@ export const completeLesson = asyncHandler(async (req: AuthRequest, res: Respons
 
   let progress = await Progress.findOne({
     studentId: req.user._id,
-    courseId: module.course
+    courseId: module.courseId
   });
 
   if (!progress) {
@@ -328,7 +333,7 @@ export const completeLesson = asyncHandler(async (req: AuthRequest, res: Respons
   }
 
   let moduleProgress = progress.modules.find(
-    m => m.moduleId.toString() === lesson.module.toString()
+    m => m.moduleId.toString() === lesson.moduleId.toString()
   );
 
   if (!moduleProgress) {
@@ -358,17 +363,18 @@ export const completeLesson = asyncHandler(async (req: AuthRequest, res: Respons
     lessonProgress.timeSpent = (lessonProgress.timeSpent || 0) + timeSpent;
   }
 
-  // Update module completion percentage
-  const moduleLessons = await Lesson.countDocuments({ 
-    module: lesson.module,
+  // Update module completion percentage (based on published lessons count)
+  const moduleLessons = await Lesson.countDocuments({
+    moduleId: lesson.moduleId,
     isPublished: true
   });
   const completedInModule = moduleProgress.lessons.filter(
     l => l.status === "completed"
   ).length;
-  moduleProgress.completionPercentage = Math.round(
-    (completedInModule / moduleLessons) * 100
-  );
+
+  moduleProgress.completionPercentage = moduleLessons > 0
+    ? Math.round((completedInModule / moduleLessons) * 100)
+    : 0;
 
   if (moduleProgress.completionPercentage === 100 && !moduleProgress.completedAt) {
     moduleProgress.completedAt = new Date();
@@ -385,13 +391,14 @@ export const completeLesson = asyncHandler(async (req: AuthRequest, res: Respons
     ? Math.round((totalCompletedLessons / progress.totalLessons) * 100)
     : 0;
 
-  progress.totalTimeSpent += timeSpent / 60; // Convert minutes to hours
+  // Convert minutes to hours (schema stores hours)
+  progress.totalTimeSpent += timeSpent / 60;
   progress.lastAccessedAt = new Date();
 
   await progress.save();
 
   // Update enrollment progress
-  await updateEnrollmentProgress(req.user._id, course.program, course._id);
+  await updateEnrollmentProgress(req.user._id, course.programId, course._id);
 
   // Send module completion notification
   if (moduleProgress.completionPercentage === 100 && completedInModule === moduleLessons) {
@@ -430,9 +437,9 @@ export const startAssessment = asyncHandler(async (req: AuthRequest, res: Respon
 
   const assessment = await Assessment.findById(assessmentId);
   if (!assessment || !assessment.isPublished) {
-    res.status(404).json({ 
-      success: false, 
-      error: "Assessment not found or not published" 
+    res.status(404).json({
+      success: false,
+      error: "Assessment not found or not published"
     });
     return;
   }
@@ -444,15 +451,15 @@ export const startAssessment = asyncHandler(async (req: AuthRequest, res: Respon
 
   if (!progress) {
     const course = await Course.findById(assessment.courseId);
-    const modules = await Module.find({ course: assessment.courseId });
+    const modules = await Module.find({ courseId: assessment.courseId });
     const moduleIds = modules.map(m => m._id);
-    const totalLessons = await Lesson.countDocuments({ module: { $in: moduleIds } });
+    const totalLessons = await Lesson.countDocuments({ moduleId: { $in: moduleIds } });
     const totalAssessments = await Assessment.countDocuments({ courseId: assessment.courseId });
 
     progress = await Progress.create({
       studentId: req.user._id,
       courseId: assessment.courseId,
-      programId: course?.program,
+      programId: course?.programId,
       modules: [],
       overallProgress: 0,
       completedLessons: 0,
@@ -461,6 +468,8 @@ export const startAssessment = asyncHandler(async (req: AuthRequest, res: Respon
       totalAssessments,
       averageScore: 0,
       totalTimeSpent: 0,
+      enrolledAt: new Date(),
+      lastAccessedAt: new Date()
     });
   }
 
@@ -529,9 +538,9 @@ export const completeAssessment = asyncHandler(async (req: AuthRequest, res: Res
 
   const assessment = await Assessment.findById(assessmentId);
   if (!assessment || !assessment.isPublished) {
-    res.status(404).json({ 
-      success: false, 
-      error: "Assessment not found" 
+    res.status(404).json({
+      success: false,
+      error: "Assessment not found"
     });
     return;
   }
@@ -542,9 +551,9 @@ export const completeAssessment = asyncHandler(async (req: AuthRequest, res: Res
   });
 
   if (!progress) {
-    res.status(404).json({ 
-      success: false, 
-      error: "Progress not found. Please start the assessment first." 
+    res.status(404).json({
+      success: false,
+      error: "Progress not found. Please start the assessment first."
     });
     return;
   }
@@ -555,9 +564,9 @@ export const completeAssessment = asyncHandler(async (req: AuthRequest, res: Res
     );
 
     if (!moduleProgress) {
-      res.status(404).json({ 
-        success: false, 
-        error: "Module progress not found" 
+      res.status(404).json({
+        success: false,
+        error: "Module progress not found"
       });
       return;
     }
@@ -567,9 +576,9 @@ export const completeAssessment = asyncHandler(async (req: AuthRequest, res: Res
     );
 
     if (!assessmentProgress) {
-      res.status(404).json({ 
-        success: false, 
-        error: "Assessment progress not found" 
+      res.status(404).json({
+        success: false,
+        error: "Assessment progress not found"
       });
       return;
     }
@@ -607,7 +616,7 @@ export const completeAssessment = asyncHandler(async (req: AuthRequest, res: Res
 
   if (allCompletedAssessments.length > 0) {
     const totalScore = allCompletedAssessments.reduce(
-      (sum, a) => sum + (a.score || 0), 
+      (sum, a) => sum + (a.score || 0),
       0
     );
     progress.averageScore = Math.round(totalScore / allCompletedAssessments.length);
@@ -616,10 +625,10 @@ export const completeAssessment = asyncHandler(async (req: AuthRequest, res: Res
   progress.lastAccessedAt = new Date();
   await progress.save();
 
-  // Check for course completion
+  // Check for course completion → update enrollment
   const course = await Course.findById(assessment.courseId);
   if (course) {
-    await updateEnrollmentProgress(req.user._id, course.program, course._id);
+    await updateEnrollmentProgress(req.user._id, course.programId, course._id);
   }
 
   // Send assessment completion notification
@@ -655,15 +664,15 @@ async function updateEnrollmentProgress(
   courseId: mongoose.Types.ObjectId
 ) {
   try {
-    const enrollment = await Enrollment.findOne({ 
-      studentId, 
-      program: programId 
+    const enrollment = await Enrollment.findOne({
+      studentId,
+      programId
     });
-    
+
     if (!enrollment) return;
 
     const courseProgressIndex = enrollment.coursesProgress.findIndex(
-      cp => cp.course.toString() === courseId.toString()
+      cp => cp.courseId.toString() === courseId.toString()
     );
 
     if (courseProgressIndex === -1) return;
@@ -671,15 +680,22 @@ async function updateEnrollmentProgress(
     const progress = await Progress.findOne({ studentId, courseId });
     if (!progress) return;
 
+    // Update lessons completed count
     enrollment.coursesProgress[courseProgressIndex].lessonsCompleted = progress.completedLessons;
 
-    if (enrollment.coursesProgress[courseProgressIndex].status === EnrollmentStatus.PENDING &&
-        progress.completedLessons > 0) {
+    // Activate if pending and any progress
+    if (
+      enrollment.coursesProgress[courseProgressIndex].status === EnrollmentStatus.PENDING &&
+      progress.completedLessons > 0
+    ) {
       enrollment.coursesProgress[courseProgressIndex].status = EnrollmentStatus.ACTIVE;
     }
 
-    if (progress.overallProgress === 100 &&
-        enrollment.coursesProgress[courseProgressIndex].status !== EnrollmentStatus.COMPLETED) {
+    // If course is fully completed
+    if (
+      progress.overallProgress === 100 &&
+      enrollment.coursesProgress[courseProgressIndex].status !== EnrollmentStatus.COMPLETED
+    ) {
       enrollment.coursesProgress[courseProgressIndex].status = EnrollmentStatus.COMPLETED;
       enrollment.coursesProgress[courseProgressIndex].completionDate = new Date();
 
@@ -698,6 +714,7 @@ async function updateEnrollmentProgress(
 
     await enrollment.save();
 
+    // If all courses are completed → program completed
     const allCoursesCompleted = enrollment.coursesProgress.every(
       cp => cp.status === EnrollmentStatus.COMPLETED
     );
@@ -715,7 +732,7 @@ async function updateEnrollmentProgress(
           title: "Program Completed!",
           message: `Congratulations! You've completed the ${program.title} program`,
           relatedId: programId,
-          relatedModel: "Course",
+          relatedModel: "Program",
         });
       }
     }

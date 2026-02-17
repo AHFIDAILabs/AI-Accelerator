@@ -1,16 +1,17 @@
 import mongoose, { Schema, Model, Document } from "mongoose";
 
 export enum EnrollmentStatus {
-  PENDING = 'pending',
-  ACTIVE = 'active',
-  COMPLETED = 'completed',
-  DROPPED = 'dropped',
-  SUSPENDED = 'suspended'
+  PENDING = "pending",
+  ACTIVE = "active",
+  COMPLETED = "completed",
+  DROPPED = "dropped",
+  SUSPENDED = "suspended"
 }
 
 export interface IEnrollment extends Document {
   studentId: mongoose.Types.ObjectId;
-  program: mongoose.Types.ObjectId;
+  programId: mongoose.Types.ObjectId;
+
   status: EnrollmentStatus;
   enrollmentDate: Date;
   completionDate?: Date;
@@ -19,7 +20,6 @@ export interface IEnrollment extends Document {
   notes?: string;
 
   coursesProgress: {
-    course: mongoose.Types.ObjectId;
     courseId: mongoose.Types.ObjectId;
     status: EnrollmentStatus;
     lessonsCompleted: number;
@@ -31,34 +31,65 @@ export interface IEnrollment extends Document {
   updatedAt: Date;
 }
 
-
 const enrollmentSchema = new Schema<IEnrollment>(
-{
-  studentId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-  program: { type: Schema.Types.ObjectId, ref: 'Program', required: true, index: true },
+  {
+    studentId: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+      index: true
+    },
 
-  status: { type: String, enum: Object.values(EnrollmentStatus), default: EnrollmentStatus.PENDING },
+    programId: {
+      type: Schema.Types.ObjectId,
+      ref: "Program",
+      required: true,
+      index: true
+    },
 
-  enrollmentDate: { type: Date, default: Date.now },
-  completionDate: Date,
-  dropDate: Date,
-  cohort: String,
-  notes: String,
+    status: {
+      type: String,
+      enum: Object.values(EnrollmentStatus),
+      default: EnrollmentStatus.PENDING
+    },
 
-  coursesProgress: [{
-    course: { type: Schema.Types.ObjectId, ref: 'Course', required: true },
-    courseId: { type: Schema.Types.ObjectId, ref: 'Course', index: true },
-    status: { type: String, enum: Object.values(EnrollmentStatus), default: EnrollmentStatus.PENDING },
-    lessonsCompleted: { type: Number, default: 0 },
-    totalLessons: { type: Number, default: 0 },
-    completionDate: Date
-  }]
-},
-{ timestamps: true }
+    enrollmentDate: { type: Date, default: Date.now },
+    completionDate: Date,
+    dropDate: Date,
+    cohort: String,
+    notes: String,
+
+    coursesProgress: [
+      {
+        courseId: {
+          type: Schema.Types.ObjectId,
+          ref: "Course",
+          required: true,
+          index: true
+        },
+
+        status: {
+          type: String,
+          enum: Object.values(EnrollmentStatus),
+          default: EnrollmentStatus.PENDING
+        },
+
+        lessonsCompleted: { type: Number, default: 0 },
+        totalLessons: { type: Number, default: 0 },
+        completionDate: Date
+      }
+    ]
+  },
+  { timestamps: true }
 );
 
-// Unique per student/program
-enrollmentSchema.index({ studentId: 1, program: 1 }, { unique: true });
+// Unique per student per program
+enrollmentSchema.index({ studentId: 1, programId: 1 }, { unique: true });
 
+// Useful for analytics (optional but important)
+enrollmentSchema.index({ studentId: 1 });
+enrollmentSchema.index({ programId: 1 });
+enrollmentSchema.index({ "coursesProgress.courseId": 1 });
 
-export const Enrollment: Model<IEnrollment> = mongoose.model<IEnrollment>('Enrollment', enrollmentSchema);
+export const Enrollment: Model<IEnrollment> =
+  mongoose.model<IEnrollment>("Enrollment", enrollmentSchema);
