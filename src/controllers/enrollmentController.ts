@@ -137,6 +137,34 @@ export const enrollStudent = asyncHandler(async (req: AuthRequest, res: Response
     relatedModel: "Program",
   });
 
+  // Notify instructors who own courses in this program
+const programInstructorIds = await Course.distinct("createdBy", {
+  _id: { $in: programCourseIds },
+});
+
+await Promise.all(
+  programInstructorIds.map((instructorId: any) =>
+    pushNotification({
+      userId: instructorId,
+      type: NotificationType.ENROLLMENT,
+      title: "New Student Enrolled",
+      message: `${student.firstName} ${student.lastName} enrolled in ${program.title}`,
+      relatedId: enrollment._id,
+      relatedModel: "Enrollment",
+    })
+  )
+);
+
+programInstructorIds.forEach((instructorId: any) => {
+  io.to(instructorId.toString()).emit("notification", {
+    type: NotificationType.ENROLLMENT,
+    title: "New Student Enrolled",
+    message: `${student.firstName} ${student.lastName} enrolled in ${program.title}`,
+    programId: program._id,
+    timestamp: new Date(),
+  });
+});
+
   // Emit real-time notification
   const io = getIo();
   io.to(student._id.toString()).emit("notification", {
@@ -284,6 +312,35 @@ export const bulkEnrollStudentsInProgram = asyncHandler(async (req: AuthRequest,
         relatedId: program._id,
         relatedModel: "Program",
       });
+
+
+      // Notify instructors who own courses in this program
+const programInstructorIds = await Course.distinct("createdBy", {
+  _id: { $in: programCourseIds },
+});
+
+await Promise.all(
+  programInstructorIds.map((instructorId: any) =>
+    pushNotification({
+      userId: instructorId,
+      type: NotificationType.ENROLLMENT,
+      title: "New Student Enrolled",
+      message: `${student.firstName} ${student.lastName} enrolled in ${program.title}`,
+      relatedId: enrollment._id,
+      relatedModel: "Enrollment",
+    })
+  )
+);
+
+programInstructorIds.forEach((instructorId: any) => {
+  io.to(instructorId.toString()).emit("notification", {
+    type: NotificationType.ENROLLMENT,
+    title: "New Student Enrolled",
+    message: `${student.firstName} ${student.lastName} enrolled in ${program.title}`,
+    programId: program._id,
+    timestamp: new Date(),
+  });
+});
 
       io.to(student._id.toString()).emit("notification", {
         type: NotificationType.COURSE_UPDATE,
@@ -764,6 +821,33 @@ export const selfEnrollInProgram = asyncHandler(async (req: AuthRequest, res: Re
     relatedId: program._id,
     relatedModel: "Program",
   });
+
+  const selfEnrollInstructorIds = await Course.distinct("createdBy", {
+  _id: { $in: programCourseIds },
+});
+
+await Promise.all(
+  selfEnrollInstructorIds.map((instructorId: any) =>
+    pushNotification({
+      userId: instructorId,
+      type: NotificationType.ENROLLMENT,
+      title: "New Student Self-Enrolled",
+      message: `${req.user!.firstName} ${req.user!.lastName} self-enrolled in ${program.title}`,
+      relatedId: enrollment._id,
+      relatedModel: "Enrollment",
+    })
+  )
+);
+
+selfEnrollInstructorIds.forEach((instructorId: any) => {
+  io.to(instructorId.toString()).emit("notification", {
+    type: NotificationType.ENROLLMENT,
+    title: "New Student Self-Enrolled",
+    message: `${req.user!.firstName} ${req.user!.lastName} self-enrolled in ${program.title}`,
+    programId: program._id,
+    timestamp: new Date(),
+  });
+});
 
   const io = getIo();
   io.to(req.user._id.toString()).emit("notification", {

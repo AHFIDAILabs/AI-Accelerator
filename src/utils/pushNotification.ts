@@ -13,7 +13,7 @@ export interface PushNotificationInput {
   title: string;
   message: string;
   relatedId?: mongoose.Types.ObjectId;
-  relatedModel?: 'Course' | 'Module' | 'Lesson' | 'Assessment' | 'Certificate' | 'Program';
+  relatedModel?: 'Course' | 'Module' | 'Lesson' | 'Assessment' | 'Certificate' | 'Program' | 'Submission' | 'Enrollment';
 }
 
 /**

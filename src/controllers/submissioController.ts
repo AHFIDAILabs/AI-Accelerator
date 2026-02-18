@@ -133,7 +133,7 @@ const gradedAnswers: IAnswer[] = answers.map((ans: any, i: number) => {
 
   const isLate = !!(assessment.endDate && new Date() > assessment.endDate);
 
-  // ── Save submission ───────────────────────────────────────────────────
+  // ── Save submission 
   const submission = await Submission.create({
     assessmentId,
     studentId: req.user._id,

@@ -7,7 +7,10 @@ export enum NotificationType {
   GRADE_POSTED = 'grade_posted',
   CERTIFICATE_ISSUED = 'certificate_issued',
   ANNOUNCEMENT = 'announcement',
-  REMINDER = 'reminder'
+  REMINDER = 'reminder',
+  ENROLLMENT = 'enrollment',
+  SUBMISSION = 'submission',
+  OTHER = 'other'
 }
 
 export interface INotification extends Document {
@@ -19,7 +22,7 @@ export interface INotification extends Document {
   message: string;
 
   relatedId?: mongoose.Types.ObjectId;
-  relatedModel?: 'Program' | 'Course' | 'Module' | 'Lesson' | 'Assessment' | 'Certificate' | 'Submission';
+  relatedModel?: 'Program' | 'Course' | 'Module' | 'Lesson' | 'Assessment' | 'Certificate' | 'Submission' | 'Enrollment';
   url?: string;
 
   isRead: boolean;
