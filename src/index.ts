@@ -67,7 +67,7 @@ app.use(
 const allowedOrigins = [
   'http://localhost:3000',
   'https://ahfidlearn.netlify.app',
-  'https://ai-program-lms.onrender.com',
+  'https://ahfidlms.vercel.app',
   process.env.CLIENT_URL, // Fallback to env variable
 ].filter(Boolean); // Remove undefined values
 
