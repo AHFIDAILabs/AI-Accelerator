@@ -46,7 +46,7 @@ const notificationSchema = new Schema<INotification>(
 
     relatedModel: {
       type: String,
-      enum: ['Program', 'Course', 'Module', 'Lesson', 'Assessment', 'Certificate', 'Submission']
+      enum: ['Program', 'Course', 'Module', 'Lesson', 'Assessment', 'Certificate', 'Submission', 'Enrollment'],
     },
 
     url: String,
