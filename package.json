@@ -45,6 +45,7 @@
     "groq-sdk": "^0.37.0",
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
+    "lru-cache": "^11.2.6",
     "moment": "^2.29.4",
     "mongoose": "^8.0.0",
     "morgan": "^1.10.0",

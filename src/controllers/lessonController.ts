@@ -18,6 +18,13 @@ import { notifyCourseStudents, pushNotification } from "../utils/pushNotificatio
 import { NotificationTemplates } from "../utils/notificationTemplates";
 import { Program } from "../models/program";
 import { UserRole } from "../models/user";
+import { cache } from "../utils/cache";
+
+const getProgramCacheKey = (id: string) => `program:full:${id}`;
+
+const invalidateProgramCache = (id: string) => {
+  cache.delete(getProgramCacheKey(id));
+};
 
 // ==============================
 // CREATE LESSON
@@ -242,6 +249,11 @@ if (req.user.role === UserRole.INSTRUCTOR) {
     $inc: { lessonCount: 1 }
   }).exec();
 
+ invalidateProgramCache((moduleDoc.courseId as any).programId.toString()); // program cache
+invalidateCourseCache(courseId.toString()); // course-level cache
+invalidateModuleCache(moduleId.toString()); // module-level cache
+cache.delete(`lesson:full:${lesson._id}`); // lesson-level cache
+
   console.log('Lesson created successfully:', lesson._id);
 
   return res.status(201).json({
@@ -276,6 +288,11 @@ export const toggleLessonPublish = asyncHandler(async (req: AuthRequest, res: Re
   const wasPublished = lesson.isPublished;
   lesson.isPublished = !lesson.isPublished;
   await lesson.save();
+
+  invalidateModuleCache(lesson.moduleId.toString());
+  invalidateCourseCache((lesson.moduleId as any).courseId.toString());
+  invalidateProgramCache(((lesson.moduleId as any).courseId as any).programId.toString());
+  cache.delete(`lesson:full:${lesson._id}`);
 
   // Notify students when lesson is newly published
   if (lesson.isPublished && !wasPublished) {
@@ -336,24 +353,6 @@ if (req.user?.role === UserRole.INSTRUCTOR) {
     data: lesson,
   });
 });
-
-// ============================================
-// 🔹 HELPER: Get Lesson + Module + Course
-// ============================================
-const getLessonHierarchy = async (lessonId: string) => {
-  const lesson = await Lesson.findById(lessonId);
-  if (!lesson || !lesson.isPublished) {
-    throw new Error("Lesson not found or not published");
-  }
-
-  const moduleDoc = await Module.findById(lesson.moduleId);
-  if (!moduleDoc) throw new Error("Module not found");
-
-  const course = await Course.findById(moduleDoc.courseId);
-  if (!course) throw new Error("Course not found");
-
-  return { lesson, module: moduleDoc, course };
-};
 
 // ============================================
 // 🔹 HELPER: Get or Create Progress (Race Safe)
@@ -486,6 +485,8 @@ export const startLesson = asyncHandler(async (req: AuthRequest, res: Response) 
   }
 
   await progress.save();
+  cache.delete(`progress:${req.user._id.toString()}`);
+
 
   return res.json({
     success: true,
@@ -925,6 +926,11 @@ export const updateLesson = asyncHandler(async (req: AuthRequest, res: Response)
 
   await lesson.save();
 
+  invalidateModuleCache(lesson.moduleId.toString());
+  invalidateCourseCache((lesson.moduleId as any).courseId.toString());
+  invalidateProgramCache(((lesson.moduleId as any).courseId as any).programId.toString());
+  cache.delete(`lesson:full:${lesson._id}`); // lesson-level cache
+
   res.json({
     success: true,
     message: req.user?.role === 'instructor'
@@ -973,6 +979,11 @@ export const deleteLesson = asyncHandler(async (req: AuthRequest, res: Response)
 
   await lesson.deleteOne();
 
+  invalidateProgramCache(((lesson.moduleId as any).courseId as any).programId.toString());
+  invalidateCourseCache((lesson.moduleId as any).courseId.toString());
+  invalidateModuleCache(lesson.moduleId.toString());
+  cache.delete(`lesson:full:${lesson._id}`);
+
   res.status(200).json({ success: true, message: "Lesson deleted successfully" });
 });
 
@@ -1010,6 +1021,27 @@ if (req.user?.role === UserRole.INSTRUCTOR) {
   }));
 
   await Lesson.bulkWrite(bulkOps);
+
+  // Invalidate caches for all affected lessons
+  for (const item of orders) {
+    cache.delete(`lesson:full:${item.lessonId}`);
+  }
+
+  // Invalidate module and course caches for all affected modules
+  const moduleIds = orders.map((item: any) => item.moduleId);
+  for (const moduleId of moduleIds) {
+    invalidateModuleCache(moduleId);
+  }
+
+  const courseIds = [...new Set(orders.map((item: any) => (item.moduleId as any).courseId))];
+  for (const courseId of courseIds) {
+    invalidateCourseCache(courseId);
+  }
+
+  const programIds = [...new Set(orders.map((item: any) => ((item.moduleId as any).courseId as any).programId))];
+  for (const programId of programIds) {
+    invalidateProgramCache(programId);
+  }
 
  return res.status(200).json({ success: true, message: "Lessons reordered successfully" });
 });
@@ -1238,3 +1270,12 @@ if (req.user.role === UserRole.INSTRUCTOR) {
     });
   }
 );
+const invalidateCourseCache = (id: string) => {
+  cache.delete(`course:full:${id}`);
+};
+
+const invalidateModuleCache = (id: string) => {
+  cache.delete(`module:full:${id}`);
+};
+
+

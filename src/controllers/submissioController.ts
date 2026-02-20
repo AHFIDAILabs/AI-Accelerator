@@ -331,12 +331,14 @@ export const getSubmission = asyncHandler(async (req: AuthRequest, res: Response
     return;
   }
 
-  if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-    res.status(400).json({ success: false, error: "Invalid submission ID" });
-    return;
-  }
+const submissionId = req.params.submissionId || req.params.id;
 
-  const submission = await Submission.findById(req.params.id)
+if (!mongoose.Types.ObjectId.isValid(submissionId)) {
+  res.status(400).json({ success: false, error: "Invalid submission ID" });
+  return;
+}
+
+  const submission = await Submission.findById(submissionId)
     .populate("assessmentId", "title type questions totalPoints passingScore")
     .populate("studentId", "firstName lastName email")
     .populate("gradedBy", "firstName lastName");

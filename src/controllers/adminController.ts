@@ -18,7 +18,13 @@ import { Certificate } from '../models/Certificate';
 import { CloudinaryHelper } from '../utils/cloudinaryHelper';
 import { Module } from '../models/Module';
 import { Lesson } from '../models/Lesson';
+import { cache } from '../utils/cache';
 
+
+const getProgramCacheKey = (id: string) => `program:full:${id}`;
+const invalidateProgramCache = (id: string) => {
+  cache.delete(getProgramCacheKey(id));
+};
 
 // ============================================
 // USER MANAGEMENT
@@ -359,19 +365,24 @@ export const getStudentProgress = asyncHandler(
 // @desc    Get all instructors
 // @route   GET /api/admin/instructors
 // @access  Admin only
-export const getAllInstructors = asyncHandler(
-  async (req: AuthRequest, res: Response) => {
-    const instructors = await User.find({ role: UserRole.INSTRUCTOR }).select(
-      '-password -refreshTokens -accessToken'
-    );
+export const getAllInstructors = asyncHandler(async (req, res) => {
+  const users = await User.find({ role: UserRole.INSTRUCTOR })
+    .select("firstName lastName profileImage bio title skills rating reviews");
 
-    res.status(200).json({
-      success: true,
-      count: instructors.length,
-      data: instructors,
-    });
-  }
-);
+  const instructors = users.map(u => ({
+    id: u._id,
+    name: `${u.firstName} ${u.lastName}`,
+    profileImage: u.profileImage,
+    role: UserRole.INSTRUCTOR,
+    bio: u.instructorProfile?.bio || "",
+  }));
+
+  res.status(200).json({
+    success: true,
+    count: instructors.length,
+    data: instructors
+  });
+});
 
 // @desc    Promote student to instructor
 // @route   PATCH /api/admin/users/:id/promote-instructor
@@ -883,6 +894,8 @@ export const updateProgram = asyncHandler(async (req: AuthRequest, res: Response
 
   await program.save();
 
+  invalidateProgramCache(program._id.toString());
+
   return res.status(200).json({
     success: true,
     message: 'Program updated successfully',
@@ -901,6 +914,8 @@ export const deleteProgram = asyncHandler(async (req: AuthRequest, res: Response
   await Course.updateMany({ programId: program._id }, { $unset: { programId: '' } });
 
   await program.deleteOne();
+
+  invalidateProgramCache(program._id.toString());
 
   return res.status(200).json({
     success: true,

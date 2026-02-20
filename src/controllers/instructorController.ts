@@ -271,7 +271,6 @@ export const getInstructorCourses = asyncHandler(async (req: AuthRequest, res: R
   });
 });
 
-
 // @desc    Get single course details
 // @route   GET /api/v1/instructors/courses/:id
 // @access  Instructor only
@@ -346,11 +345,11 @@ export const getInstructorStudents = asyncHandler(
     }
 
     const instructorId = req.user._id;
-    const { page = 1, limit = 10, status } = req.query;
+    const { page = 1, limit = 10, status, search } = req.query;
 
-    // 1️⃣ Get all courses taught by instructor
-    const courses = await Course.find({ instructorId: instructorId })
-      .select("_id title programId approvalStatus isPublished coverImage createdBy createdAt");
+    // 1️⃣ Get all courses taught by this instructor
+    const courses = await Course.find({ instructorId })
+      .select("_id title programId");
 
     if (!courses.length) {
       return res.json({
@@ -358,11 +357,12 @@ export const getInstructorStudents = asyncHandler(
         data: [],
         total: 0,
         count: 0,
-        page,
-        pages: 1
+        page: Number(page),
+        pages: 1,
       });
     }
 
+    // Map: programId → courses array (for attaching to student result)
     const programMap: Record<string, { id: string; title: string }[]> = {};
     courses.forEach((c) => {
       const pid = c.programId.toString();
@@ -370,28 +370,53 @@ export const getInstructorStudents = asyncHandler(
       programMap[pid].push({ id: c._id.toString(), title: c.title });
     });
 
-    const programIds = Object.keys(programMap).map(p => new mongoose.Types.ObjectId(p));
+    const programIds = Object.keys(programMap).map(
+      (p) => new mongoose.Types.ObjectId(p)
+    );
 
-    // 2️⃣ Match students
-    const match: any = { program: { $in: programIds } };
-    if (status && status !== 'all') match.status = status;
+    // 2️⃣ Build enrollment match — use "programId" (NOT "program")
+    const enrollmentMatch: any = { programId: { $in: programIds } };
+    if (status && status !== "all") {
+      enrollmentMatch.status = status;
+    }
 
-    const total = await Enrollment.countDocuments(match);
-
-    const students = await Enrollment.aggregate([
-      { $match: match },
-      { $sort: { enrollmentDate: -1 } },
-      { $skip: (Number(page) - 1) * Number(limit) },
-      { $limit: Number(limit) },
+    // 3️⃣ Aggregate: join users, then filter by search if provided
+    const aggregatePipeline: any[] = [
+      { $match: enrollmentMatch },
+      // Join student user record
       {
         $lookup: {
           from: "users",
           localField: "studentId",
           foreignField: "_id",
-          as: "student"
-        }
+          as: "student",
+        },
       },
       { $unwind: "$student" },
+    ];
+
+    // Search filter applied after join (so we can search name/email)
+    if (search && (search as string).trim()) {
+      const regex = { $regex: (search as string).trim(), $options: "i" };
+      aggregatePipeline.push({
+        $match: {
+          $or: [
+            { "student.firstName": regex },
+            { "student.lastName": regex },
+            { "student.email": regex },
+          ],
+        },
+      });
+    }
+
+    // Count total (before pagination) — run in parallel with paged query
+    const countPipeline = [...aggregatePipeline, { $count: "total" }];
+
+    const dataPipeline = [
+      ...aggregatePipeline,
+      { $sort: { enrollmentDate: -1 } },
+      { $skip: (Number(page) - 1) * Number(limit) },
+      { $limit: Number(limit) },
       {
         $project: {
           _id: "$student._id",
@@ -401,30 +426,69 @@ export const getInstructorStudents = asyncHandler(
           profileImage: "$student.profileImage",
           studentProfile: "$student.studentProfile",
           enrollmentDate: 1,
-          UserStatus: "$student.UserStatus.ACTIVE",
           status: 1,
-          program: 1
-        }
-      }
+          programId: 1,   // keep programId so we can map courses below
+        },
+      },
+    ];
+
+    const [countResult, students] = await Promise.all([
+      Enrollment.aggregate(countPipeline),
+      Enrollment.aggregate(dataPipeline),
     ]);
 
-    // 3️⃣ Attach courses & progress
-    const studentIds = students.map(s => s._id);
+    const total = countResult[0]?.total ?? 0;
+
+    // 4️⃣ Attach courses & aggregate progress per student
+    const studentIds = students.map((s: any) => s._id);
 
     const progressDocs = await Progress.find({
       studentId: { $in: studentIds },
-      courseId: { $in: courses.map(c => c._id) }
-    }).select(
-      "studentId overallProgress completedLessons totalLessons lastAccessedAt"
-    );
+      courseId: { $in: courses.map((c) => c._id) },
+    }).select("studentId overallProgress completedLessons totalLessons lastAccessedAt");
 
-    const progressMap = new Map();
+    // One student can have multiple progress docs (one per course).
+    // Aggregate them into a single "best" summary per student.
+    const progressMap = new Map<
+      string,
+      {
+        overallProgress: number;
+        completedLessons: number;
+        totalLessons: number;
+        lastAccessedAt: Date | null;
+        count: number;
+      }
+    >();
+
     progressDocs.forEach((p) => {
-      progressMap.set(p.studentId.toString(), p);
+      const key = p.studentId.toString();
+      const existing = progressMap.get(key);
+      if (!existing) {
+        progressMap.set(key, {
+          overallProgress: p.overallProgress || 0,
+          completedLessons: p.completedLessons || 0,
+          totalLessons: p.totalLessons || 0,
+          lastAccessedAt: p.lastAccessedAt || null,
+          count: 1,
+        });
+      } else {
+        // Accumulate then average later
+        existing.overallProgress += p.overallProgress || 0;
+        existing.completedLessons += p.completedLessons || 0;
+        existing.totalLessons += p.totalLessons || 0;
+        existing.count += 1;
+        // Keep most recent lastAccessedAt
+        if (
+          p.lastAccessedAt &&
+          (!existing.lastAccessedAt || p.lastAccessedAt > existing.lastAccessedAt)
+        ) {
+          existing.lastAccessedAt = p.lastAccessedAt;
+        }
+      }
     });
 
-    const result = students.map((s) => {
-      const studentCourses = programMap[s.program.toString()] || [];
+    const result = students.map((s: any) => {
+      const studentCourses = programMap[s.programId?.toString()] || [];
       const prog = progressMap.get(s._id.toString());
 
       return {
@@ -432,7 +496,7 @@ export const getInstructorStudents = asyncHandler(
         courses: studentCourses,
         progress: prog
           ? {
-              overallProgress: prog.overallProgress,
+              overallProgress: Math.round(prog.overallProgress / prog.count),
               completedLessons: prog.completedLessons,
               totalLessons: prog.totalLessons,
               lastAccessedAt: prog.lastAccessedAt,
@@ -441,8 +505,8 @@ export const getInstructorStudents = asyncHandler(
               overallProgress: 0,
               completedLessons: 0,
               totalLessons: 0,
-              lastAccessedAt: null
-            }
+              lastAccessedAt: null,
+            },
       };
     });
 
@@ -479,7 +543,7 @@ export const getStudentCourseProgress = asyncHandler(
 
     // === COURSE OWNERSHIP ===
     const course = await Course.findById(courseId)
-      .select("_id title slug description instructor program");
+      .select("_id title slug description instructorId programId coverImage");
 
     if (!course || !course.instructorId.equals(req.user._id)) {
       return res.status(403).json({
@@ -643,7 +707,7 @@ export const getPendingSubmissions = asyncHandler(async (req: AuthRequest, res: 
   const { courseId, page = "1", limit = "10" } = req.query;
 
   // ✅ Get courseIds belonging to this instructor — Submission has no instructorId field
-  const instructorCourses = await Course.find({ instructorId: req.user._id }).select("_id");
+  const instructorCourses = await Course.find({ instructorId: req.user._id }).select("_id title programId instructorId coverImage");
   const courseIds = instructorCourses.map(c => c._id);
 
   const filter: any = {
@@ -660,7 +724,7 @@ export const getPendingSubmissions = asyncHandler(async (req: AuthRequest, res: 
   const submissions = await Submission.find(filter)
     .populate("studentId", "firstName lastName email profileImage")
     .populate("assessmentId", "title type totalPoints passingScore")
-    .populate("courseId", "title")
+    .populate("courseId", "title coverImage") // ✅ Add course info for grading context
     .sort({ submittedAt: 1 }) // oldest first — grade in order
     .skip((parseInt(page as string) - 1) * parseInt(limit as string))
     .limit(parseInt(limit as string));
@@ -730,6 +794,103 @@ export const gradeSubmission = asyncHandler(async (req: AuthRequest, res: Respon
 
   return res.json({ success: true, message: "Submission graded", data: submission });
 });
+
+
+// @desc    Get all submissions for a specific assessment (instructor view)
+// @route   GET /api/v1/instructors/assessments/:assessmentId/submissions
+// @access  Instructor only
+export const getSubmissionsByAssessment = asyncHandler(
+  async (req: AuthRequest, res: Response) => {
+    if (!req.user) return res.status(401).json({ success: false, error: 'Not authorized' })
+
+    const { assessmentId } = req.params
+    const { page = '1', limit = '10', status } = req.query
+
+    if (!mongoose.Types.ObjectId.isValid(assessmentId)) {
+      return res.status(400).json({ success: false, error: 'Invalid assessment ID' })
+    }
+
+    // Verify the assessment belongs to one of this instructor's courses
+    const assessment = await Assessment.findById(assessmentId).select('courseId title questions')
+    if (!assessment) {
+      return res.status(404).json({ success: false, error: 'Assessment not found' })
+    }
+
+    const course = await Course.findOne({
+      _id: assessment.courseId,
+      instructorId: req.user._id,
+    }).select('_id title')
+
+    if (!course) {
+      return res.status(403).json({ success: false, error: 'Access denied' })
+    }
+
+    const filter: any = { assessmentId }
+    if (status && status !== 'all') filter.status = status
+
+    const total = await Submission.countDocuments(filter)
+
+    const submissions = await Submission.find(filter)
+      .populate('studentId', 'firstName lastName email profileImage')
+      // Populate assessmentId WITH questions so the detail page can show question text
+      .populate({
+        path: 'assessmentId',
+        select: 'title type totalPoints passingScore questions',
+      })
+      .sort({ submittedAt: 1 }) // oldest first for grading queue
+      .skip((parseInt(page as string) - 1) * parseInt(limit as string))
+      .limit(parseInt(limit as string))
+
+    return res.status(200).json({
+      success: true,
+      count: submissions.length,
+      total,
+      page: parseInt(page as string),
+      pages: Math.ceil(total / parseInt(limit as string)),
+      data: submissions,
+    })
+  }
+)
+
+// @desc    Get a single submission by ID (instructor view)
+// @route   GET /api/v1/instructors/submissions/:id
+// @access  Instructor only
+export const getSubmissionById = asyncHandler(
+  async (req: AuthRequest, res: Response) => {
+    if (!req.user) return res.status(401).json({ success: false, error: 'Not authorized' })
+
+    const { id } = req.params
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, error: 'Invalid submission ID' })
+    }
+
+    const submission = await Submission.findById(id)
+      .populate('studentId', 'firstName lastName email profileImage studentProfile')
+      // Include questions so the grading UI can display question text next to each answer
+      .populate({
+        path: 'assessmentId',
+        select: 'title type totalPoints passingScore questions endDate',
+      })
+      .populate('courseId', 'title coverImage') // Add course info for context
+
+    if (!submission) {
+      return res.status(404).json({ success: false, error: 'Submission not found' })
+    }
+
+    // Verify ownership through the course
+    const course = await Course.findOne({
+      _id: submission.courseId,
+      instructorId: req.user._id,
+    }).select('_id title instructorId')
+
+    if (!course) {
+      return res.status(403).json({ success: false, error: 'Access denied' })
+    }
+
+    return res.status(200).json({ success: true, data: submission })
+  }
+)
 
 
 // ============================================

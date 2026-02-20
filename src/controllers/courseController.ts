@@ -20,7 +20,14 @@ import { CloudinaryHelper } from '../utils/cloudinaryHelper';
 import { pushNotification, notifyCourseStudents } from '../utils/pushNotification';
 import { NotificationTemplates } from '../utils/notificationTemplates';
 import { NotificationType } from '../models/Notification';
+import { cache } from '../utils/cache';
 
+
+const getProgramCacheKey = (id: string) => `program:full:${id}`;
+
+const invalidateProgramCache = (id: string) => {
+  cache.delete(getProgramCacheKey(id));
+};
 // ============================================
 // PUBLIC COURSE ENDPOINTS
 // ============================================
@@ -252,6 +259,8 @@ await Program.findByIdAndUpdate(
   { new: true }
 );
 
+
+invalidateProgramCache(programId);
 res.status(201).json({
   success: true,
   message:
@@ -338,6 +347,10 @@ export const updateCourse = asyncHandler(async (req: AuthRequest, res: Response)
 
   await course.save();
 
+  if (course.programId) {
+    invalidateProgramCache(course.programId.toString());
+  }
+
   // Notify students if course remains published after update
   if (wasPublished && course.isPublished) {
     try {
@@ -381,6 +394,10 @@ export const approveCourse = asyncHandler(async (req: AuthRequest, res: Response
 
   await course.save();
 
+    if (course.programId) {
+    invalidateProgramCache(course.programId.toString());
+  }
+
   if (wasUnpublished) {
     try {
       const notification = NotificationTemplates.announcement(
@@ -417,6 +434,10 @@ export const rejectCourse = asyncHandler(async (req: AuthRequest, res: Response)
   course.isPublished = false;
 
   await course.save();
+
+    if (course.programId) {
+    invalidateProgramCache(course.programId.toString());
+  }
 
   // Notify instructor about rejection
   try {
@@ -491,6 +512,10 @@ await Program.findByIdAndUpdate(
 
   await course.deleteOne();
 
+    if (course.programId) {
+    invalidateProgramCache(course.programId.toString());
+  }
+
   res.status(200).json({
     success: true,
     message: 'Course and all related content deleted successfully',
@@ -531,6 +556,10 @@ export const toggleCoursePublish = asyncHandler(async (req: AuthRequest, res: Re
   course.isPublished = !course.isPublished;
   await course.save();
 
+    if (course.programId) {
+    invalidateProgramCache(course.programId.toString());
+  }
+  
   if (wasUnpublished && course.isPublished) {
     try {
       const notification = NotificationTemplates.announcement(

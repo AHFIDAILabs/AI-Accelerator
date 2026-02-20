@@ -88,6 +88,10 @@ courses: [{ type: Schema.Types.ObjectId, ref: "Course" }],
 
 programSchema.index({ title: 1, category: 1 });
 programSchema.index({ slug: 1 });
+programSchema.index({ isPublished: 1 });
+programSchema.index({ createdBy: 1 });
+programSchema.index({ instructors: 1 });
+
 
 
 export const Program: Model<IProgram> = mongoose.model("Program", programSchema);

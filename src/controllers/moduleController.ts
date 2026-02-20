@@ -21,6 +21,19 @@ import { pushNotification, notifyCourseStudents } from "../utils/pushNotificatio
 import { NotificationTemplates } from "../utils/notificationTemplates";
 import { getIo } from "../config/socket";
 
+import { cache } from '../utils/cache';
+
+
+const getModuleCacheKey = (id: string) => `module:full:${id}`;
+
+const invalidateModuleCache = (id: string) => {
+  cache.delete(getModuleCacheKey(id));
+};
+
+const invalidateCourseCache = (id: string) => {
+  cache.delete(`course:full:${id}`);
+};
+
 // ==============================
 // CREATE MODULE
 // ==============================
@@ -108,6 +121,8 @@ export const createModule = asyncHandler(async (req: AuthRequest, res: Response)
     // OPTIONAL: maintain course.moduleCount (if you want denormalized counts)
     await Course.findByIdAndUpdate(courseId, { $inc: { moduleCount: 1 } }).exec();
 
+    invalidateModuleCache(module._id.toString());
+
     return res.status(201).json({
       success: true,
       message: "Module created successfully (pending publication)",
@@ -194,7 +209,7 @@ export const toggleModulePublish = asyncHandler(async (req: AuthRequest, res: Re
   const wasPublished = module.isPublished;
   module.isPublished = !module.isPublished;
   await module.save();
-
+invalidateModuleCache(module._id.toString());
 
   // Notify enrolled students when module is newly published
   if (module.isPublished && !wasPublished) {
@@ -305,6 +320,8 @@ export const updateModule = asyncHandler(async (req: AuthRequest, res: Response)
 
   await module.save();
 
+  invalidateModuleCache(module._id.toString());
+  invalidateCourseCache(course.programId.toString());
   // Notify students if module was published and updated (admin flow)
   if (module.isPublished && req.user?.role === UserRole.ADMIN) {
     try {
@@ -518,6 +535,9 @@ export const deleteModule = asyncHandler(async (req: AuthRequest, res: Response)
   await module.deleteOne();
   await Course.findByIdAndUpdate(module.courseId, { $inc: { moduleCount: -1 } }).exec();
 
+  invalidateModuleCache(module._id.toString());
+  invalidateCourseCache((module.courseId as any).toString());
+
   res.status(200).json({ success: true, message: "Module deleted successfully" });
 });
 
@@ -562,6 +582,10 @@ export const reorderModules = asyncHandler(async (req: AuthRequest, res: Respons
   }));
 
   await Module.bulkWrite(bulkOps);
+
+  invalidateModuleCache(courseIds[0]);
+  invalidateCourseCache(courseIds[0]);
+  
 
   res.status(200).json({ success: true, message: "Modules reordered successfully" });
 });

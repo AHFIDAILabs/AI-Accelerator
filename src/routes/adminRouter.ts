@@ -42,12 +42,14 @@ import {
   getProgramProgress
 } from '../controllers/adminController';
 
-import { protect } from '../middlewares/auth';
+import { optionalAuth, protect } from '../middlewares/auth';
 import { authorize } from '../middlewares/adminAuth';
 import { UserRole } from '../models/user';
 import { get } from 'http';
 
 const adminRouter = express.Router();
+
+adminRouter.get('/instructors', optionalAuth, getAllInstructors);
 
 // All admin routes require authentication
 adminRouter.use(protect);
@@ -83,7 +85,7 @@ adminRouter.get('/students/:id/progress', authorize(UserRole.ADMIN, UserRole.INS
 // ============================================
 // INSTRUCTOR MANAGEMENT (Admin Only)
 // ============================================
-adminRouter.get('/instructors', authorize(UserRole.ADMIN), getAllInstructors);
+
 adminRouter.patch('/users/:id/promote-instructor', authorize(UserRole.ADMIN), promoteToInstructor);
 adminRouter.patch('/users/:id/demote-instructor', authorize(UserRole.ADMIN), demoteToStudent);
 

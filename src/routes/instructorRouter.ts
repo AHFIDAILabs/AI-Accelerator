@@ -16,7 +16,9 @@ import {
   createInstructorCourse,
   getInstructorAssessments,
   getInstructorLessons,
-  getInstructorModules
+  getInstructorModules,
+  getSubmissionsByAssessment,
+  getSubmissionById
 } from '../controllers/instructorController';
 import { uploadCourseCover } from '../middlewares/uploadMiddleware';
 import { courseValidation, instructorStudentValidation } from '../middlewares/validation';
@@ -50,6 +52,10 @@ instructorRouter.post('/courses/:courseId/announcements', sendCourseAnnouncement
 instructorRouter.get('/content/assessments', getInstructorAssessments);
 instructorRouter.get('/content/lessons', getInstructorLessons);
 instructorRouter.get('/content/modules', getInstructorModules);
+
+// Submissions
+instructorRouter.get('/assessments/:assessmentId/submissions', getSubmissionsByAssessment);
+instructorRouter.get('/submissions/:submissionId', getSubmissionById);
 
 // Dashboard
 instructorRouter.get('/dashboard/stats', getInstructorDashboardStats);

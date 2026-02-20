@@ -6,6 +6,19 @@ import { AuthRequest } from "../middlewares/auth";
 import { Program } from "../models/program";
 import { Course } from "../models/Course";
 import { UserRole } from "../models/user";
+import { Module } from "../models/Module";
+import { Lesson } from "../models/Lesson";
+import { cache } from "../utils/cache";
+import { get } from "http";
+
+
+// Cache Helper: get full program details with caching (for expensive operations like fetching all courses/modules/lessons)
+const getProgramCacheKey = (id: string) => `program:full:${id}`;
+
+const invalidateProgramCache = (id: string) => {
+  cache.delete(getProgramCacheKey(id));
+};
+
 
 /** ------------------------------------------------------
  * CREATE PROGRAM
@@ -199,53 +212,116 @@ export const getProgramBySlug = asyncHandler(async (req: Request, res: Response)
 });
 
 // =============================
-// GET SINGLE PROGRAM WITH FULL DETAILS (USING PROGRAM.courses)
+// GET SINGLE PROGRAM WITH FULL DETAILS (UPGRADED)
+// - Returns courses → modules → lessons
+// - Adds derived counts for modules/lessons/duration
 // =============================
 export const getProgramWithDetails = asyncHandler(async (req: Request, res: Response) => {
-  try {
-    const { id } = req.params;
+  const { id } = req.params;
 
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({
-        success: false,
-        error: "Invalid program ID format"
-      });
-    }
+if (!mongoose.Types.ObjectId.isValid(id)) {
+  return res.status(400).json({ success: false, error: "Invalid program ID format" });
+}
 
-    const program = await Program.findById(id)
-      .populate("instructors", "firstName lastName profileImage email")
-      .populate({
-        path: "courses",
-        select: "title description slug level estimatedHours moduleCount lessonCount isPublished coverImage order"
-      })
-      .lean();
+const cacheKey = getProgramCacheKey(id);
+const cached = cache.get(cacheKey);
+if (cached) {
+  return res.json({ success: true, data: cached });
+}
+  // Base program (no heavy populate here)
+  const program = await Program.findById(id)
+    .populate("instructors", "firstName lastName profileImage email")
+    .lean();
 
-    if (!program) {
-      return res.status(404).json({
-        success: false,
-        error: "Program not found"
-      });
-    }
-
-    // Derived stats
-    const courses = (program.courses as any[]) || [];
-    const courseCount = courses.length;
-    const totalEstimatedHours = courses.reduce((sum, c) => sum + (c.estimatedHours || 0), 0);
-
-    return res.json({
-      success: true,
-      data: {
-        ...program,
-        stats: { courseCount, totalEstimatedHours }
-      }
-    });
-  } catch (error: any) {
-    console.error("Error in getProgramWithDetails:", error);
-    return res.status(500).json({
-      success: false,
-      error: error.message || "Failed to fetch program details"
-    });
+  if (!program) {
+    return res.status(404).json({ success: false, error: "Program not found" });
   }
+
+  // 1) Fetch courses that belong to this program (authoritative via Course.programId)
+  const courses = await Course.find({ programId: id })
+    .select("title description slug level estimatedHours coverImage order")
+    .sort({ order: 1 })
+    .lean();
+
+  // 2) For all courses, fetch modules
+  const courseIds = courses.map(c => c._id);
+  const modules = await Module.find({ courseId: { $in: courseIds } })
+    .select("title description order duration courseId")
+    .sort({ order: 1 })
+    .lean();
+
+  // 3) For all modules, fetch lessons
+  const moduleIds = modules.map(m => m._id);
+  const lessons = await Lesson.find({ moduleId: { $in: moduleIds } })
+    .select("title order duration type moduleId")
+    .sort({ order: 1 })
+    .lean();
+
+  // 4) Group lessons by moduleId
+  const lessonsByModule = new Map<string, any[]>();
+  for (const l of lessons) {
+    const key = l.moduleId.toString();
+    if (!lessonsByModule.has(key)) lessonsByModule.set(key, []);
+    lessonsByModule.get(key)!.push(l);
+  }
+
+  // 5) Group modules by courseId and attach lessons with derived counts
+  const modulesByCourse = new Map<string, any[]>();
+  for (const m of modules) {
+    const key = m.courseId.toString();
+    const modLessons = lessonsByModule.get(m._id.toString()) || [];
+    const totalMins = modLessons.reduce((acc, l) => acc + (l.duration || 0), 0);
+    const modOut = {
+      ...m,
+      lessons: modLessons,
+      lessonCount: modLessons.length,
+      duration: m.estimatedMinutes ?? totalMins, // prefer explicit module.duration; fallback to sum of lessons
+    };
+    if (!modulesByCourse.has(key)) modulesByCourse.set(key, []);
+    modulesByCourse.get(key)!.push(modOut);
+  }
+
+  // 6) Attach modules to their courses and compute course-level derived stats
+  const outCourses = courses.map(c => {
+    const mods = modulesByCourse.get(c._id.toString()) || [];
+    const courseLessonCount = mods.reduce((acc, m) => acc + (m.lessonCount || 0), 0);
+    const courseEstimatedHours = c.estimatedHours ?? Math.round(
+      (mods.reduce((acc, m) => acc + (m.duration || 0), 0) / 60) * 10
+    ) / 10; // if you want to compute from minutes
+
+    return {
+      ...c,
+      modules: mods,
+      moduleCount: mods.length,
+      lessonCount: courseLessonCount,
+      // keep existing estimatedHours if present, otherwise derive from lessons/minutes
+      estimatedHours: c.estimatedHours ?? courseEstimatedHours,
+    };
+  });
+
+  // 7) Program-level derived stats
+  const totalModules = outCourses.reduce((acc, c) => acc + (c.moduleCount || 0), 0);
+  const totalLessons = outCourses.reduce((acc, c) => acc + (c.lessonCount || 0), 0);
+  const totalEstimatedHours = outCourses.reduce((acc, c) => acc + (c.estimatedHours || 0), 0);
+
+  const result = {
+  ...program,
+  courses: outCourses,
+  stats: {
+    courseCount: outCourses.length,
+    moduleCount: totalModules,
+    lessonCount: totalLessons,
+    totalEstimatedHours,
+  },
+};
+
+cache.set(cacheKey, result);
+
+return res.json({
+  success: true,
+  data: result,
+});
+
 });
 
 /** ------------------------------------------------------
@@ -273,13 +349,15 @@ export const addCourseToProgram = asyncHandler(async (req: AuthRequest, res: Res
   program.courses.push(course._id);
   program.courseCount = program.courses.length;
 
-  // Optional: keep Course.programId in sync (if you use it)
-   course.programId = program._id;
+  course.programId = program._id;
 
-  await Promise.all([program.save() , course.save()]);
+  await Promise.all([program.save(), course.save()]);
 
+  // 🔥 Invalidate cache
+  invalidateProgramCache(programId);
   return res.json({ success: true, message: "Course added", data: program });
 });
+
 
 /** ------------------------------------------------------
  * REMOVE COURSE FROM PROGRAM
@@ -304,15 +382,16 @@ export const removeCourseFromProgram = asyncHandler(async (req: AuthRequest, res
     return res.status(404).json({ success: false, error: "Course was not in this program" });
   }
 
-  // Optional: clear Course.programId if you’re syncing both
-await Promise.all([
-  Course.findByIdAndUpdate(courseId, { $unset: { programId: "" } }),
-  program.save(),
-]);
-  await program.save();
+  await Promise.all([
+    Course.findByIdAndUpdate(courseId, { $unset: { programId: "" } }),
+    program.save(),
+  ]);
 
+  // 🔥 Invalidate cache
+invalidateProgramCache(programId);
   return res.json({ success: true, message: "Course removed", data: program });
 });
+
 
 /** ------------------------------------------------------
  * TOGGLE PROGRAM PUBLISH
