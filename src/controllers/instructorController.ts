@@ -944,8 +944,8 @@ export const getInstructorDashboardStats = asyncHandler(async (req: AuthRequest,
 
   const [totalEnrollments, activeStudents, pendingSubmissions, gradedThisWeek, recentSubmissions] =
     await Promise.all([
-      Enrollment.countDocuments({ courseId: { $in: courseIds } }),
-      Enrollment.countDocuments({ courseId: { $in: courseIds }, status: "active" }),
+     Enrollment.countDocuments({ 'coursesProgress.courseId': { $in: courseIds } }),
+      Enrollment.countDocuments({ 'coursesProgress.courseId': { $in: courseIds }, status: 'active' }),
 
       // ✅ was: { instructorId: req.user._id, status: SUBMITTED } — instructorId doesn't exist
       Submission.countDocuments({
