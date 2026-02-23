@@ -531,7 +531,7 @@ export const bulkEnrollByEmail = asyncHandler(
               {
                 tempPassword,
                 programTitle: program.title,
-                loginUrl: `${BASE_URL}/auth/login`,
+                loginUrl: `${BASE_URL}/auth/changePassword?email=${encodeURIComponent(student.email)}`,
               }
             );
           } catch (emailErr) {
@@ -621,7 +621,7 @@ export const bulkEnrollByEmail = asyncHandler(
               {
                 programTitle: program.title,
                 courseCount: programCourseIds.length,
-                loginUrl: `${process.env.CLIENT_URL}/login`,
+                loginUrl: `${BASE_URL}/auth/login`,
               }
             );
           } catch (emailErr) {

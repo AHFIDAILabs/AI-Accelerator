@@ -98,7 +98,7 @@ const courseSchema = new Schema<ICourse>(
   { timestamps: true }
 );
 
-courseSchema.index({ programId: 1, order: 1 }, { unique: true });
+courseSchema.index({ programId: 1, order: 1 });
 courseSchema.index({ slug: 1 });
 
 export const Course: Model<ICourse> = mongoose.model("Course", courseSchema);
