@@ -40,13 +40,12 @@ const scholarshipSchema = new Schema<IScholarship>(
       unique: true,
       uppercase: true,
       trim: true,
-      index: true,
+      
     },
     programId: {
       type: Schema.Types.ObjectId,
       ref: "Program",
       required: true,
-      index: true,
     },
     studentEmail: {
       type: String,
@@ -78,7 +77,6 @@ const scholarshipSchema = new Schema<IScholarship>(
       type: String,
       enum: Object.values(ScholarshipStatus),
       default: ScholarshipStatus.ACTIVE,
-      index: true,
     },
     usedBy: { type: Schema.Types.ObjectId, ref: "User" },
     usedAt: Date,

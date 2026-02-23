@@ -28,7 +28,6 @@ const moduleSchema = new Schema<IModule>(
       type: Schema.Types.ObjectId,
       ref: "Course",
       required: true,
-      index: true
     },
 
     lessons: [

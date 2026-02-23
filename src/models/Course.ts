@@ -42,7 +42,6 @@ const courseSchema = new Schema<ICourse>(
       type: Schema.Types.ObjectId,
       ref: "Program",
       required: true,
-      index: true
     },
 
     title: { type: String, required: true, trim: true },

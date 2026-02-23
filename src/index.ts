@@ -69,6 +69,7 @@ const allowedOrigins = [
   'https://ahfidlearn.netlify.app',
   'https://ahfidlms.vercel.app',
   'https://learneasy-two.vercel.app',
+  'https://ahfid-lms.onrender.com',
   process.env.CLIENT_URL, // Fallback to env variable
 ].filter(Boolean); // Remove undefined values
 

@@ -54,9 +54,9 @@ export interface IProgress extends Document {
 
 const progressSchema = new Schema<IProgress>(
   {
-    studentId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-    programId: { type: Schema.Types.ObjectId, ref: 'Program', index: true },
-    courseId: { type: Schema.Types.ObjectId, ref: 'Course', index: true },
+    studentId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    programId: { type: Schema.Types.ObjectId, ref: 'Program' },
+    courseId: { type: Schema.Types.ObjectId, ref: 'Course' },
 
     modules: [
       {

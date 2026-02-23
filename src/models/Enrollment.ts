@@ -37,14 +37,13 @@ const enrollmentSchema = new Schema<IEnrollment>(
       type: Schema.Types.ObjectId,
       ref: "User",
       required: true,
-      index: true
+      
     },
 
     programId: {
       type: Schema.Types.ObjectId,
       ref: "Program",
       required: true,
-      index: true
     },
 
     status: {
@@ -65,7 +64,6 @@ const enrollmentSchema = new Schema<IEnrollment>(
           type: Schema.Types.ObjectId,
           ref: "Course",
           required: true,
-          index: true
         },
 
         status: {

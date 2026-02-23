@@ -64,7 +64,7 @@ export interface IUser extends Document {
 const userSchema = new Schema<IUser>(
   {
     firstName: { type: String, required: true, trim: true, maxlength: 50 },
-    lastName: { type: String, required: true, trim: true, maxlength: 50 },
+    lastName: { type: String, required: false, trim: true, maxlength: 50 },
 
     email: {
       type: String,
@@ -132,7 +132,7 @@ userSchema.methods.matchPassword = async function (enteredPassword: string) {
 };
 
 userSchema.virtual('fullName').get(function () {
-  return `${this.firstName} ${this.lastName}`;
-});
+  return [this.firstName, this.lastName].filter(Boolean).join(' ')
+})
 
 export const User: Model<IUser> = mongoose.model('User', userSchema);

@@ -1,9 +1,5 @@
 // ============================================
 // src/controllers/authController.ts
-// Key changes from original:
-// 1. Added account lockout checks
-// 2. Improved error messages (generic)
-// 3. Added validation result handling
 // ============================================
 
 import { Response, NextFunction } from 'express';
@@ -29,19 +25,14 @@ import { CloudinaryHelper } from '../utils/cloudinaryHelper';
 // ============================================
 export const register = asyncHandler(
   async (req: AuthRequest, res: Response, next: NextFunction) => {
-    // Validate request
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      res.status(400).json({
-        success: false,
-        errors: errors.array(),
-      });
+      res.status(400).json({ success: false, errors: errors.array() });
       return;
     }
 
     const { firstName, lastName, email, password, phoneNumber, cohort } = req.body;
 
-    // Check if user already exists
     const existingUser = await User.findOne({ email });
     if (existingUser) {
       res.status(400).json({
@@ -51,7 +42,6 @@ export const register = asyncHandler(
       return;
     }
 
-    // Create user
     const user = await User.create({
       firstName,
       lastName,
@@ -63,20 +53,19 @@ export const register = asyncHandler(
       status: UserStatus.ACTIVE,
     });
 
-    // Generate tokens
     const accessToken = generateAccessToken({ id: user._id.toString() });
     const refreshToken = generateRefreshToken({ id: user._id.toString() });
 
-    // Save refresh token to database
     user.refreshTokens = [refreshToken];
     await user.save();
 
-    // Send welcome email (non-blocking)
-    emailService.sendWelcomeEmail(user).catch((err) => {
-      console.error('Error sending welcome email:', err);
-    });
+    // Welcome email — non-blocking so a mail failure never blocks registration
+    emailService
+      .sendWelcomeEmail({ email: user.email, firstName: user.firstName })
+      .catch((err) =>
+        console.error(`[Email] Welcome email failed for ${user.email}:`, err)
+      );
 
-    // Send token response
     sendTokenResponse(user._id.toString(), 201, res, user);
   }
 );
@@ -88,80 +77,57 @@ export const register = asyncHandler(
 // ============================================
 export const login = asyncHandler(
   async (req: AuthRequest, res: Response, next: NextFunction) => {
-    // Validate request
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({
-        success: false,
-        errors: errors.array(),
-      });
+      return res.status(400).json({ success: false, errors: errors.array() });
     }
 
     const { email, password } = req.body;
 
-    // Check if user exists (include password for verification)
     const user = await User.findOne({ email }).select('+password +refreshTokens');
 
-   
-if (!user) {
-  return res.status(401).json({
-    success: false,
-    message: 'Invalid credentials'
-  });
-}
+    if (!user) {
+      return res.status(401).json({ success: false, message: 'Invalid credentials' });
+    }
 
-if (user.status !== UserStatus.ACTIVE) {
-  return res.status(401).json({
-    success: false,
-    message: 'Account is not active. Please contact support.'
-  });
-}
-
-
-    // Verify password
-    const isPasswordValid = await user.matchPassword(password);
-    if (!isPasswordValid) {
+    if (user.status !== UserStatus.ACTIVE) {
       return res.status(401).json({
         success: false,
-        error: 'Invalid credentials',
+        message: 'Account is not active. Please contact support.',
       });
     }
 
-    // Password is correct: generate tokens
+    const isPasswordValid = await user.matchPassword(password);
+    if (!isPasswordValid) {
+      return res.status(401).json({ success: false, error: 'Invalid credentials' });
+    }
+
     const accessToken = generateAccessToken({ id: user._id.toString() });
     const refreshToken = generateRefreshToken({ id: user._id.toString() });
 
-    // Add new refresh token to user's tokens (keep last 5)
     user.refreshTokens = [...(user.refreshTokens || []), refreshToken].slice(-5);
     user.lastLogin = new Date();
     await user.save();
 
-    // Send token response WITH user data in body
-   return sendTokenResponse(user._id.toString(), 200, res, user);
+    return sendTokenResponse(user._id.toString(), 200, res, user);
   }
 );
 
-
 // ============================================
-// @desc    Get current logged in user
+// @desc    Get current logged-in user
 // @route   GET /api/v1/auth/me
 // @access  Private
 // ============================================
-
 export const getMe = asyncHandler(
   async (req: AuthRequest, res: Response, next: NextFunction) => {
     if (!req.user) {
-      return res.status(401).json({
-        success: false,
-        error: 'Not authorized',
-      });
+      return res.status(401).json({ success: false, error: 'Not authorized' });
     }
 
-    // ✅ Return full user object matching frontend User type
     return res.status(200).json({
       success: true,
       data: {
-        _id: req.user._id.toString(), // ✅ Changed from 'id' to '_id'
+        _id: req.user._id.toString(),
         firstName: req.user.firstName,
         lastName: req.user.lastName,
         email: req.user.email,
@@ -190,59 +156,41 @@ export const refreshAccessToken = asyncHandler(
     const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
 
     if (!refreshToken) {
-      res.status(401).json({
-        success: false,
-        error: 'Refresh token not provided',
-      });
+      res.status(401).json({ success: false, error: 'Refresh token not provided' });
       return;
     }
 
     try {
       const decoded = verifyRefreshToken(refreshToken);
       const user = await User.findById(decoded.id).select('+refreshTokens');
-      
+
       if (!user) {
-        res.status(401).json({
-          success: false,
-          error: 'User not found',
-        });
+        res.status(401).json({ success: false, error: 'User not found' });
         return;
       }
 
-      if (!user.refreshTokens || !user.refreshTokens.includes(refreshToken)) {
-        res.status(401).json({
-          success: false,
-          error: 'Invalid refresh token',
-        });
+      if (!user.refreshTokens?.includes(refreshToken)) {
+        res.status(401).json({ success: false, error: 'Invalid refresh token' });
         return;
       }
 
       if (user.status !== UserStatus.ACTIVE) {
-        res.status(401).json({
-          success: false,
-          error: 'Account is not active',
-        });
+        res.status(401).json({ success: false, error: 'Account is not active' });
         return;
       }
 
-      // Generate new tokens (token rotation)
       const newAccessToken = generateAccessToken({ id: user._id.toString() });
       const newRefreshToken = generateRefreshToken({ id: user._id.toString() });
 
-      // Replace old refresh token with new one
       user.refreshTokens = user.refreshTokens
-        .filter((token) => token !== refreshToken)
+        .filter((t) => t !== refreshToken)
         .concat(newRefreshToken)
         .slice(-5);
 
       await user.save();
       sendTokenResponse(user._id.toString(), 200, res, user);
-    } catch (error) {
-      res.status(401).json({
-        success: false,
-        error: 'Invalid or expired refresh token',
-      });
-      return;
+    } catch {
+      res.status(401).json({ success: false, error: 'Invalid or expired refresh token' });
     }
   }
 );
@@ -255,31 +203,21 @@ export const refreshAccessToken = asyncHandler(
 export const logout = asyncHandler(
   async (req: AuthRequest, res: Response, next: NextFunction) => {
     if (!req.user) {
-      res.status(401).json({
-        success: false,
-        error: 'Not authorized',
-      });
+      res.status(401).json({ success: false, error: 'Not authorized' });
       return;
     }
 
     const refreshToken = req.cookies?.refreshToken;
-
     if (refreshToken) {
       const user = await User.findById(req.user._id).select('+refreshTokens');
       if (user) {
-        user.refreshTokens = (user.refreshTokens || []).filter(
-          (token) => token !== refreshToken
-        );
+        user.refreshTokens = (user.refreshTokens || []).filter((t) => t !== refreshToken);
         await user.save();
       }
     }
 
     clearTokens(res);
-
-    res.status(200).json({
-      success: true,
-      message: 'Logged out successfully',
-    });
+    res.status(200).json({ success: true, message: 'Logged out successfully' });
   }
 );
 
@@ -291,10 +229,7 @@ export const logout = asyncHandler(
 export const logoutAll = asyncHandler(
   async (req: AuthRequest, res: Response, next: NextFunction) => {
     if (!req.user) {
-      res.status(401).json({
-        success: false,
-        error: 'Not authorized',
-      });
+      res.status(401).json({ success: false, error: 'Not authorized' });
       return;
     }
 
@@ -305,7 +240,6 @@ export const logoutAll = asyncHandler(
     }
 
     clearTokens(res);
-
     res.status(200).json({
       success: true,
       message: 'Logged out from all devices successfully',
@@ -313,27 +247,24 @@ export const logoutAll = asyncHandler(
   }
 );
 
-
+// ============================================
+// @desc    Get user profile
+// @route   GET /api/v1/auth/profile
+// @access  Private
+// ============================================
 export const getProfile = asyncHandler(
   async (req: AuthRequest, res: Response, next: NextFunction) => {
     if (!req.user) {
-      res.status(401).json({
-        success: false,
-        error: "Not Authorized",
-      });
+      res.status(401).json({ success: false, error: 'Not Authorized' });
       return;
     }
 
-    const profile = await User.findById(req.user._id)
-      .select(
-        "firstName lastName email phoneNumber profileImage studentProfile"
-      );
+    const profile = await User.findById(req.user._id).select(
+      'firstName lastName email phoneNumber profileImage studentProfile'
+    );
 
     if (!profile) {
-      res.status(404).json({
-        success: false,
-        error: "User not found",
-      });
+      res.status(404).json({ success: false, error: 'User not found' });
       return;
     }
 
@@ -354,7 +285,6 @@ export const getProfile = asyncHandler(
   }
 );
 
-
 // ============================================
 // @desc    Update user profile
 // @route   PUT /api/v1/auth/profile
@@ -363,66 +293,55 @@ export const getProfile = asyncHandler(
 export const updateProfile = asyncHandler(
   async (req: AuthRequest, res: Response, next: NextFunction) => {
     if (!req.user) {
-      res.status(401).json({
-        success: false,
-        error: 'Not authorized',
-      });
+      res.status(401).json({ success: false, error: 'Not authorized' });
       return;
     }
 
-    // Validate request
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      res.status(400).json({
-        success: false,
-        errors: errors.array(),
-      });
+      res.status(400).json({ success: false, errors: errors.array() });
       return;
     }
 
-    const {
-      firstName,
-      lastName,
-      phoneNumber,
-      githubProfile,
-      linkedinProfile,
-      portfolioUrl,
-    } = req.body;
+    const { firstName, lastName, phoneNumber, githubProfile, linkedinProfile, portfolioUrl } =
+      req.body;
 
     const user = await User.findById(req.user._id);
     if (!user) {
-      res.status(404).json({
-        success: false,
-        error: 'User not found',
-      });
+      res.status(404).json({ success: false, error: 'User not found' });
       return;
     }
 
-    // Update text fields
     if (firstName) user.firstName = firstName;
     if (lastName) user.lastName = lastName;
     if (phoneNumber !== undefined) user.phoneNumber = phoneNumber;
-    if (githubProfile !== undefined && user.studentProfile) user.studentProfile.githubProfile = githubProfile;
-    if (linkedinProfile !== undefined && user.studentProfile) user.studentProfile.linkedinProfile = linkedinProfile;
-    if (portfolioUrl !== undefined && user.studentProfile) user.studentProfile.portfolioUrl = portfolioUrl;
+    if (githubProfile !== undefined && user.studentProfile)
+      user.studentProfile.githubProfile = githubProfile;
+    if (linkedinProfile !== undefined && user.studentProfile)
+      user.studentProfile.linkedinProfile = linkedinProfile;
+    if (portfolioUrl !== undefined && user.studentProfile)
+      user.studentProfile.portfolioUrl = portfolioUrl;
 
-
-    // Update profile picture if file was uploaded
     if (req.file) {
       if (user.profileImage && user.profileImage !== 'default-avatar.png') {
         try {
           const publicId = CloudinaryHelper.extractPublicId(user.profileImage);
-          if (publicId) {
-            await CloudinaryHelper.deleteFile(publicId, 'image');
-          }
-        } catch (error) {
-          console.error('Error deleting old profile image:', error);
+          if (publicId) await CloudinaryHelper.deleteFile(publicId, 'image');
+        } catch (err) {
+          console.error('[Cloudinary] Failed to delete old profile image:', err);
         }
       }
       user.profileImage = req.file.path;
     }
 
     await user.save();
+
+    // Notify the user about the profile change (non-blocking)
+    emailService
+      .sendProfileUpdatedEmail({ email: user.email, firstName: user.firstName })
+      .catch((err) =>
+        console.error(`[Email] Profile update email failed for ${user.email}:`, err)
+      );
 
     res.status(200).json({
       success: true,
@@ -450,20 +369,13 @@ export const updateProfile = asyncHandler(
 export const changePassword = asyncHandler(
   async (req: AuthRequest, res: Response, next: NextFunction) => {
     if (!req.user) {
-      res.status(401).json({
-        success: false,
-        error: 'Not authorized',
-      });
+      res.status(401).json({ success: false, error: 'Not authorized' });
       return;
     }
 
-    // Validate request
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      res.status(400).json({
-        success: false,
-        errors: errors.array(),
-      });
+      res.status(400).json({ success: false, errors: errors.array() });
       return;
     }
 
@@ -471,29 +383,28 @@ export const changePassword = asyncHandler(
 
     const user = await User.findById(req.user._id).select('+password +refreshTokens');
     if (!user) {
-      res.status(404).json({
-        success: false,
-        error: 'User not found',
-      });
+      res.status(404).json({ success: false, error: 'User not found' });
       return;
     }
 
-    // Verify current password
     const isPasswordValid = await user.matchPassword(currentPassword);
     if (!isPasswordValid) {
-      res.status(401).json({
-        success: false,
-        error: 'Current password is incorrect',
-      });
+      res.status(401).json({ success: false, error: 'Current password is incorrect' });
       return;
     }
 
-    // Update password
     user.password = newPassword;
-    user.refreshTokens = []; // Invalidate all tokens
+    user.refreshTokens = []; // Invalidate all sessions
     await user.save();
 
     clearTokens(res);
+
+    // Security alert email — non-blocking
+    emailService
+      .sendPasswordChangedEmail({ email: user.email, firstName: user.firstName })
+      .catch((err) =>
+        console.error(`[Email] Password change email failed for ${user.email}:`, err)
+      );
 
     res.status(200).json({
       success: true,
@@ -509,20 +420,16 @@ export const changePassword = asyncHandler(
 // ============================================
 export const forgotPassword = asyncHandler(
   async (req: AuthRequest, res: Response, next: NextFunction) => {
-    // Validate request
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      res.status(400).json({
-        success: false,
-        errors: errors.array(),
-      });
+      res.status(400).json({ success: false, errors: errors.array() });
       return;
     }
 
     const { email } = req.body;
     const user = await User.findOne({ email });
 
-    // Don't reveal if user exists
+    // Always return the same response to prevent user enumeration
     if (!user) {
       res.status(200).json({
         success: true,
@@ -533,25 +440,32 @@ export const forgotPassword = asyncHandler(
 
     const resetToken = crypto.randomBytes(32).toString('hex');
     const hashedToken = crypto.createHash('sha256').update(resetToken).digest('hex');
-    
+
     user.resetPasswordToken = hashedToken;
-    user.resetPasswordExpire = new Date(Date.now() + 60 * 60 * 1000);
+    user.resetPasswordExpire = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
     await user.save();
 
     try {
-      await emailService.sendPasswordResetEmail(user, resetToken);
+      await emailService.sendPasswordResetEmail(
+        { email: user.email, firstName: user.firstName },
+        resetToken
+      );
+
       res.status(200).json({
         success: true,
-        message: 'Password reset email sent',
+        message: 'If an account with that email exists, a password reset link has been sent.',
       });
-    } catch (error) {
+    } catch (err) {
+      // Clean up token so user can try again
       user.resetPasswordToken = undefined;
       user.resetPasswordExpire = undefined;
       await user.save();
 
+      console.error(`[Email] Password reset email failed for ${user.email}:`, err);
+
       res.status(500).json({
         success: false,
-        error: 'Email could not be sent',
+        error: 'Failed to send password reset email. Please try again later.',
       });
     }
   }
@@ -564,13 +478,9 @@ export const forgotPassword = asyncHandler(
 // ============================================
 export const resetPassword = asyncHandler(
   async (req: AuthRequest, res: Response, next: NextFunction) => {
-    // Validate request
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      res.status(400).json({
-        success: false,
-        errors: errors.array(),
-      });
+      res.status(400).json({ success: false, errors: errors.array() });
       return;
     }
 
@@ -585,18 +495,22 @@ export const resetPassword = asyncHandler(
     }).select('+refreshTokens');
 
     if (!user) {
-      res.status(400).json({
-        success: false,
-        error: 'Invalid or expired reset token',
-      });
+      res.status(400).json({ success: false, error: 'Invalid or expired reset token' });
       return;
     }
 
     user.password = password;
     user.resetPasswordToken = undefined;
     user.resetPasswordExpire = undefined;
-    user.refreshTokens = [];
+    user.refreshTokens = []; // Invalidate all existing sessions
     await user.save();
+
+    // Confirm the reset via email — non-blocking
+    emailService
+      .sendPasswordResetSuccessEmail({ email: user.email, firstName: user.firstName })
+      .catch((err) =>
+        console.error(`[Email] Reset success email failed for ${user.email}:`, err)
+      );
 
     res.status(200).json({
       success: true,
