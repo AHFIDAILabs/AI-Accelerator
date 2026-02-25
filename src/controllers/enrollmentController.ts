@@ -1030,18 +1030,24 @@ export const getAllEnrollments = asyncHandler(
     if (programId) filter.programId = programId;
     if (cohort) filter.cohort = cohort;
 
-    const total = await Enrollment.countDocuments(filter);
+const total = await Enrollment.countDocuments(filter);
+const pageNum = parseInt(page as string);
+const limitNum = parseInt(limit as string);
+const skip = (pageNum - 1) * limitNum;
 
-    const enrollments = await Enrollment.find(filter)
-      .populate("studentId", "firstName lastName email profileImage studentProfile")
-      .populate("programId", "title slug estimatedHours")
-      .populate("coursesProgress.courseId", "title")
-      .sort({ enrollmentDate: -1 })
-      .skip((parseInt(page as string) - 1) * parseInt(limit as string))
-      .limit(parseInt(limit as string))
-      .lean();
+const enrollments = await Enrollment.find(filter)
+  .populate("studentId", "firstName lastName email profileImage studentProfile")
+  .populate("programId", "title slug estimatedHours")
+  .populate("coursesProgress.courseId", "title")
+  .sort({ enrollmentDate: -1 })
+  .skip(skip)
+  .limit(limitNum)
+  .lean();
 
-    const mappedEnrollments = enrollments.map((enrollment: any) => ({
+// Filter out enrollments where studentId failed to populate
+const validEnrollments = enrollments.filter(e => e.studentId != null);
+
+    const mappedEnrollments = validEnrollments.map((enrollment: any) => ({
       ...enrollment,
       program: enrollment.programId,
     }));
