@@ -217,25 +217,12 @@ export const getProgramCourses = asyncHandler(async (req: AuthRequest, res: Resp
     return;
   }
 
-  // ✅ Temporary diagnostic — check your server logs and remove after confirming
-  const rawCount = await Course.countDocuments({ programId: program._id });
-  const rawCountByString = await Course.countDocuments({ programId: programId });
-  console.log(`[getProgramCourses] programId param: ${programId}`);
-  console.log(`[getProgramCourses] program._id: ${program._id}`);
-  console.log(`[getProgramCourses] Courses by ObjectId: ${rawCount}`);
-  console.log(`[getProgramCourses] Courses by string:   ${rawCountByString}`);
-
-  // ✅ FIX: Don't filter by isPublished here — students should see all courses
-  // in their enrolled program (published or not, so they know what's coming).
-  // If you want to hide unpublished courses, change to: { programId: program._id, isPublished: true }
   const programCourses = await Course.find(
     { programId: program._id },
     'title description order estimatedHours coverImage isPublished approvalStatus'
   ).sort({ order: 1 });
 
   if (programCourses.length === 0) {
-    // ✅ Log confirms: either no courses exist for this program, or programId mismatch
-    console.warn(`[getProgramCourses] No courses found for programId: ${program._id}. Check Course documents in DB.`);
     return res.status(200).json({
       success: true,
       data: { program, courses: [] },
@@ -244,21 +231,41 @@ export const getProgramCourses = asyncHandler(async (req: AuthRequest, res: Resp
 
   const courseIds = programCourses.map((c: any) => c._id);
 
-  const [progressDocs] = await Promise.all([
-    Progress.find({
-      studentId: req.user._id,
-      courseId: { $in: courseIds },
-    }).select('courseId overallProgress completedAssessments averageScore lastAccessedAt'),
+  // Live lesson count per course
+  const moduleDocs = await Module.find({ courseId: { $in: courseIds } }).select('_id courseId');
+  const moduleIds = moduleDocs.map((m: any) => m._id);
+
+  const lessonCounts = await Lesson.aggregate([
+    { $match: { moduleId: { $in: moduleIds } } },
+    {
+      $lookup: {
+        from: 'modules',
+        localField: 'moduleId',
+        foreignField: '_id',
+        as: 'mod',
+      },
+    },
+    { $unwind: '$mod' },
+    { $group: { _id: '$mod.courseId', count: { $sum: 1 } } },
   ]);
+
+  const lessonCountMap = new Map<string, number>();
+  lessonCounts.forEach((lc: any) => {
+    lessonCountMap.set(lc._id.toString(), lc.count);
+  });
+
+  // Progress documents
+  const progressDocs = await Progress.find({
+    studentId: req.user._id,
+    courseId: { $in: courseIds },
+  }).select('courseId overallProgress completedAssessments averageScore lastAccessedAt');
 
   const progressMap = new Map<string, any>();
   progressDocs.forEach((p) => {
     if (p.courseId) progressMap.set(p.courseId.toString(), p);
   });
 
-  // ✅ FIX: Don't rely on enrollment.coursesProgress for existence checks.
-  // A course is valid if it exists in the Course collection under this program.
-  // enrollment.coursesProgress is only used for progress metadata (lessonsCompleted etc.)
+  // Enrollment coursesProgress for lessonsCompleted and status
   const enrollmentProgressMap = new Map<string, any>();
   (enrollment.coursesProgress || []).forEach((cp: any) => {
     enrollmentProgressMap.set(cp.courseId.toString(), cp);
@@ -271,10 +278,9 @@ export const getProgramCourses = asyncHandler(async (req: AuthRequest, res: Resp
 
     return {
       course: course.toObject(),
-      // If course was added after enrollment, courseProgressData is undefined → PENDING
       enrollmentStatus: courseProgressData?.status || EnrollmentStatus.PENDING,
       lessonsCompleted: courseProgressData?.lessonsCompleted || 0,
-      totalLessons: courseProgressData?.totalLessons || 0,
+      totalLessons: lessonCountMap.get(courseIdStr) || 0,
       progress: progress
         ? {
             overallProgress: progress.overallProgress,
@@ -809,7 +815,6 @@ export const getEnrolledCourses = asyncHandler(async (req: AuthRequest, res: Res
     return;
   }
 
-  // Get all enrollments for the student
   const enrollments = await Enrollment.find({ studentId: req.user._id })
     .populate({
       path: 'programId',
@@ -818,60 +823,102 @@ export const getEnrolledCourses = asyncHandler(async (req: AuthRequest, res: Res
     .sort({ enrollmentDate: -1 });
 
   if (!enrollments.length) {
-    return res.status(200).json({
-      success: true,
-      count: 0,
-      data: []
-    });
+    return res.status(200).json({ success: true, count: 0, data: [] });
   }
 
-  // Collect unique courseIds across all enrollments to minimize DB calls
-  const uniqueCourseIds = new Set<string>();
-  enrollments.forEach((enrollment: any) => {
-    (enrollment.coursesProgress || []).forEach((cp: any) => uniqueCourseIds.add(cp.courseId.toString()));
+  // ✅ Get ALL courses from DB for each enrolled program (not from stale coursesProgress)
+  const programIds = enrollments.map((e: any) => e.programId._id || e.programId);
+
+  const allCourses = await Course.find({ programId: { $in: programIds } })
+    .select('title description order estimatedHours coverImage programId')
+    .sort({ order: 1 });
+
+  if (!allCourses.length) {
+    return res.status(200).json({ success: true, count: 0, data: [] });
+  }
+
+  const courseIds = allCourses.map((c: any) => c._id);
+
+  // ✅ Live lesson counts via aggregation
+  const moduleDocs = await Module.find({ courseId: { $in: courseIds } }).select('_id courseId');
+  const moduleIds = moduleDocs.map((m: any) => m._id);
+
+  const lessonCounts = await Lesson.aggregate([
+    { $match: { moduleId: { $in: moduleIds } } },
+    {
+      $lookup: {
+        from: 'modules',
+        localField: 'moduleId',
+        foreignField: '_id',
+        as: 'mod',
+      },
+    },
+    { $unwind: '$mod' },
+    { $group: { _id: '$mod.courseId', count: { $sum: 1 } } },
+  ]);
+
+  const lessonCountMap = new Map<string, number>();
+  lessonCounts.forEach((lc: any) => {
+    lessonCountMap.set(lc._id.toString(), lc.count);
   });
 
-  const courses = await Course.find({ _id: { $in: Array.from(uniqueCourseIds) } })
-    .select('title order estimatedHours coverImage programId');
+  // ✅ Build enrollment progress map from coursesProgress (for lessonsCompleted + status)
+  const enrollmentProgressMap = new Map<string, any>();
+  enrollments.forEach((enrollment: any) => {
+    (enrollment.coursesProgress || []).forEach((cp: any) => {
+      enrollmentProgressMap.set(cp.courseId.toString(), cp);
+    });
+  });
 
-  const courseMap = new Map<string, any>();
-  courses.forEach((c: any) => courseMap.set(c._id.toString(), c));
+  // ✅ Build program map for easy lookup
+  const programMap = new Map<string, any>();
+  enrollments.forEach((enrollment: any) => {
+    const program = enrollment.programId as any;
+    if (program?._id) {
+      programMap.set(program._id.toString(), program);
+    }
+  });
 
-  // Map courses with progress
-  const coursesWithProgress = await Promise.all(
-    enrollments.flatMap((enrollment: any) =>
-      enrollment.coursesProgress.map(async (cp: any) => {
-        const course = courseMap.get(cp.courseId.toString());
-        if (!course) return null;
+  // ✅ Fetch all progress docs in one query
+  const progressDocs = await Progress.find({
+    studentId: req.user._id,
+    courseId: { $in: courseIds },
+  }).select('courseId overallProgress completedAssessments averageScore lastAccessedAt completedLessons');
 
-        const progress = await Progress.findOne({
-          studentId: req.user!._id,
-          courseId: course._id
-        });
+  const progressMap = new Map<string, any>();
+  progressDocs.forEach((p) => {
+    if (p.courseId) progressMap.set(p.courseId.toString(), p);
+  });
 
-        return {
-          course: course.toObject(),
-          program: {
-            _id: (enrollment.programId as any)._id,
-            title: (enrollment.programId as any).title
-          },
-          enrollmentStatus: cp.status,
-          lessonsCompleted: cp.lessonsCompleted || 0,
-          totalLessons: cp.totalLessons || 0,
-          progress: progress ? {
+  const coursesWithProgress = allCourses.map((course: any) => {
+    const courseIdStr = course._id.toString();
+    const programIdStr = course.programId?.toString();
+    const program = programMap.get(programIdStr);
+    const cpData = enrollmentProgressMap.get(courseIdStr);
+    const progress = progressMap.get(courseIdStr);
+
+    return {
+      course: course.toObject(),
+      program: program
+        ? { _id: program._id, title: program.title }
+        : null,
+      enrollmentStatus: cpData?.status || EnrollmentStatus.PENDING,
+      lessonsCompleted: progress?.completedLessons || cpData?.lessonsCompleted || 0,
+      totalLessons: lessonCountMap.get(courseIdStr) || 0, // ✅ live count
+      progress: progress
+        ? {
             overallProgress: progress.overallProgress,
             completedAssessments: progress.completedAssessments,
             averageScore: progress.averageScore,
-            lastAccessedAt: progress.lastAccessedAt
-          } : null
-        };
-      })
-    )
-  );
+            lastAccessedAt: progress.lastAccessedAt,
+          }
+        : null,
+    };
+  });
 
   return res.status(200).json({
     success: true,
-    count: coursesWithProgress.filter(c => c !== null).length,
-    data: coursesWithProgress.filter(c => c !== null)
+    count: coursesWithProgress.length,
+    data: coursesWithProgress,
   });
 });
