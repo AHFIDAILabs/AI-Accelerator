@@ -74,8 +74,11 @@ export const createLesson = asyncHandler(async (req: AuthRequest, res: Response)
   }
 
   // Verify module exists and get course info
-  const moduleDoc = await Module.findById(moduleId)
-    .populate('courseId', 'title createdBy');
+const moduleDoc = await Module.findById(moduleId)
+  .populate({
+    path: 'courseId',
+    select: 'title createdBy programId'
+  });
 
   if (!moduleDoc) {
     res.status(404).json({ success: false, error: "Module not found" });
@@ -249,8 +252,12 @@ if (req.user.role === UserRole.INSTRUCTOR) {
     $inc: { lessonCount: 1 }
   }).exec();
 
- invalidateProgramCache((moduleDoc.courseId as any).programId.toString()); // program cache
-invalidateCourseCache(courseId.toString()); // course-level cache
+const courseObj = moduleDoc.courseId as any;
+
+if (courseObj?.programId) {
+  invalidateProgramCache(courseObj.programId.toString());
+}
+  invalidateCourseCache(courseId.toString()); // course-level cache
 invalidateModuleCache(moduleId.toString()); // module-level cache
 cache.delete(`lesson:full:${lesson._id}`); // lesson-level cache
 
