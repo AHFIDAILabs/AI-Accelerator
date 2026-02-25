@@ -444,15 +444,21 @@ export const getLessonDetails = asyncHandler(async (req: AuthRequest, res: Respo
   const programId = module.courseId?.programId || undefined;
 
   // For students, verify enrollment (course in program enrollment)
-  if (req.user.role === UserRole.STUDENT) {
-    const enrollment = await Enrollment.findOne({
-      studentId: req.user._id,
-      'coursesProgress.courseId': courseId
-    });
+// ✅ AFTER — checks program-level enrollment, which is how your system actually works
+if (req.user.role === UserRole.STUDENT) {
+  if (!programId) {
+    return res.status(400).json({ success: false, error: "Course is not linked to a program" });
+  }
 
-    if (!enrollment) {
-      return res.status(403).json({ success: false, error: "Not enrolled in this course" });
-    }
+  const enrollment = await Enrollment.findOne({
+    studentId: req.user._id,
+    programId: programId,
+    status: { $in: [EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED] },
+  });
+
+  if (!enrollment) {
+    return res.status(403).json({ success: false, error: "Not enrolled in this course" });
+  }
   }
 
   // Fetch assessments for this lesson
