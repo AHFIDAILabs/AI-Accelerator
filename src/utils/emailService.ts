@@ -440,7 +440,7 @@ class EmailService {
     user: BaseUser,
     resetToken: string
   ): Promise<void> {
-    const resetUrl = `${process.env.CLIENT_URL}/resetPassword/${resetToken}`;
+    const resetUrl = `${process.env.CLIENT_URL}/auth/resetPassword/${resetToken}`;
 
     const html = wrapper(
       header("Password Reset Request 🔐"),
@@ -585,7 +585,7 @@ class EmailService {
         "#f8d7da",
         BRAND.danger
       )}
-      ${ctaButton("Log In", `${process.env.CLIENT_URL}/login`)}
+      ${ctaButton("Log In", `${process.env.CLIENT_URL}/auth/login`)}
       `
     );
 
@@ -615,7 +615,7 @@ class EmailService {
         "#fff3cd",
         BRAND.warning
       )}
-      ${ctaButton("Log In Now", `${process.env.CLIENT_URL}/login`)}
+      ${ctaButton("Log In Now", `${process.env.CLIENT_URL}/auth/login`)}
       `
     );
 
