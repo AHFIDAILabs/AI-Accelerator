@@ -429,13 +429,29 @@ export const forgotPassword = asyncHandler(
     const { email } = req.body;
     const user = await User.findOne({ email });
 
-    // Always return the same response to prevent user enumeration
+    // Always return same response to prevent user enumeration
     if (!user) {
       res.status(200).json({
         success: true,
         message: 'If an account with that email exists, a password reset link has been sent.',
       });
       return;
+    }
+
+    // ── Cooldown check: if a valid token still exists, don't send a new one ──
+    if (user.resetPasswordToken && user.resetPasswordExpire) {
+      const timeLeft = user.resetPasswordExpire.getTime() - Date.now()
+      if (timeLeft > 0) {
+        const minutesLeft = Math.ceil(timeLeft / 60000)
+        res.status(200).json({
+          success: true,
+          cooldown: true,                  // ← frontend uses this flag
+          minutesLeft,
+          expiresAt: user.resetPasswordExpire, // ← frontend uses for countdown
+          message: `A reset link was already sent. Please check your email or try again in ${minutesLeft} minute${minutesLeft !== 1 ? 's' : ''}.`,
+        });
+        return;
+      }
     }
 
     const resetToken = crypto.randomBytes(32).toString('hex');
@@ -453,10 +469,10 @@ export const forgotPassword = asyncHandler(
 
       res.status(200).json({
         success: true,
+        cooldown: false,
         message: 'If an account with that email exists, a password reset link has been sent.',
       });
     } catch (err) {
-      // Clean up token so user can try again
       user.resetPasswordToken = undefined;
       user.resetPasswordExpire = undefined;
       await user.save();
