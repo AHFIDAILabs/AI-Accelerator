@@ -440,7 +440,7 @@ class EmailService {
     user: BaseUser,
     resetToken: string
   ): Promise<void> {
-    const resetUrl = `${process.env.CLIENT_URL}/reset-password/${resetToken}`;
+    const resetUrl = `${process.env.CLIENT_URL}/resetPassword/${resetToken}`;
 
     const html = wrapper(
       header("Password Reset Request 🔐"),
