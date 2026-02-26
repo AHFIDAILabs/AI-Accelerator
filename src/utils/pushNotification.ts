@@ -6,14 +6,18 @@ import { Notification, INotification, NotificationType } from "../models/Notific
 import mongoose from "mongoose";
 import { emitToUser } from "../config/socket";
 import { Enrollment } from "../models/Enrollment";
+import { LiveSession } from "../models/LiveSession";
+import { NotificationTemplates } from "../utils/notificationTemplates";
+
 
 export interface PushNotificationInput {
   userId: mongoose.Types.ObjectId;
+  programId?: mongoose.Types.ObjectId;
   type: NotificationType;
   title: string;
   message: string;
   relatedId?: mongoose.Types.ObjectId;
-  relatedModel?: 'Course' | 'Module' | 'Lesson' | 'Assessment' | 'Certificate' | 'Program' | 'Submission' | 'Enrollment';
+  relatedModel?: 'Course' | 'Module' | 'Lesson' | 'Assessment' | 'Certificate' | 'Program' | 'Submission' | 'Enrollment' | 'LiveSession';
 }
 
 /**
@@ -229,124 +233,54 @@ export const notifyCourseStudentsByStatus = async (
 };
 
 
+
+/**
+ * Send notification to all ACTIVE students in a program about a LiveSession
+ */
+export const notifyLiveSessionStudents = async (
+  sessionId: mongoose.Types.ObjectId
+): Promise<number> => {
+  // Load the session with course and program info
+  const session = await LiveSession.findById(sessionId)
+    .populate('courseId', 'title programId');
+
+  if (!session) throw new Error("LiveSession not found");
+
+  const course = session.courseId as any; // populated course
+  const programId = course.programId;
+
+  // Get active enrollments in the program
+  const enrollments = await Enrollment.find({
+    programId,
+    status: { $in: ['active'] },
+  }).populate('studentId');
+
+  const notifications = enrollments
+    .filter(e => e.studentId)
+    .map(e => ({
+      userId: (e.studentId as any)._id,
+      type: NotificationType.COURSE_UPDATE,
+      title: `Live Session: ${session.title}`,
+      message: `A live session for "${course.title}" is scheduled from ${session.startTime.toLocaleString()} to ${session.endTime.toLocaleString()}.`,
+      relatedId: session._id,
+      relatedModel: "LiveSession" as const,
+    }));
+
+  if (!notifications.length) return 0;
+
+const notif = NotificationTemplates.liveSessionScheduled(
+  session.title,
+  course.title,
+  session.startTime,
+  session.endTime
+);
+
+await pushBulkNotifications(notifications.map(n => ({ ...notif, ...n })));
+  return notifications.length;
+};
+
+
 // ============================================
 // src/utils/notificationTemplates.ts
 // ============================================
 
-export const NotificationTemplates = {
-  // Program notifications
-  programEnrolled: (programTitle: string) => ({
-    type: NotificationType.COURSE_UPDATE,
-    title: "Successfully Enrolled in Program",
-    message: `You have been enrolled in ${programTitle}`,
-  }),
-
-  programCompleted: (programTitle: string) => ({
-    type: NotificationType.CERTIFICATE_ISSUED,
-    title: "Program Completed!",
-    message: `Congratulations! You have completed ${programTitle}`,
-  }),
-
-  programPublished: (programTitle: string) => ({
-    type: NotificationType.ANNOUNCEMENT,
-    title: "New Program Available",
-    message: `${programTitle} is now available for enrollment`,
-  }),
-
-  // Course notifications
-  courseEnrolled: (courseTitle: string) => ({
-    type: NotificationType.COURSE_UPDATE,
-    title: "Course Access Granted",
-    message: `You now have access to ${courseTitle}`,
-  }),
-
-  coursePublished: (courseTitle: string, programTitle: string) => ({
-    type: NotificationType.COURSE_UPDATE,
-    title: "New Course Available",
-    message: `${courseTitle} is now available in ${programTitle}`,
-  }),
-
-  courseCompleted: (courseTitle: string) => ({
-    type: NotificationType.COURSE_UPDATE,
-    title: "Course Completed",
-    message: `Congratulations! You have completed ${courseTitle}`,
-  }),
-
-  // Module notifications
-  modulePublished: (moduleTitle: string, courseTitle: string) => ({
-    type: NotificationType.COURSE_UPDATE,
-    title: "New Module Available",
-    message: `New module "${moduleTitle}" is now available in ${courseTitle}`,
-  }),
-
-  // Lesson notifications
-  lessonPublished: (lessonTitle: string, moduleTitle: string) => ({
-    type: NotificationType.COURSE_UPDATE,
-    title: "New Lesson Available",
-    message: `New lesson "${lessonTitle}" is available in ${moduleTitle}`,
-  }),
-
-  // Assessment notifications
-  assessmentPublished: (assessmentTitle: string, courseTitle: string) => ({
-    type: NotificationType.ASSESSMENT_DUE,
-    title: "New Assessment Available",
-    message: `A new assessment "${assessmentTitle}" is now available in ${courseTitle}`,
-  }),
-
-  assessmentDue: (assessmentTitle: string, daysLeft: number) => ({
-    type: NotificationType.ASSESSMENT_DUE,
-    title: "Assessment Due Soon",
-    message: `Assessment "${assessmentTitle}" is due in ${daysLeft} day${daysLeft > 1 ? 's' : ''}`,
-  }),
-
-  assessmentGraded: (assessmentTitle: string, score: number) => ({
-    type: NotificationType.GRADE_POSTED,
-    title: "Assessment Graded",
-    message: `Your assessment "${assessmentTitle}" has been graded. Score: ${score}%`,
-  }),
-
-  assessmentFailed: (assessmentTitle: string, score: number, passingScore: number) => ({
-    type: NotificationType.GRADE_POSTED,
-    title: "Assessment Requires Attention",
-    message: `Your score of ${score}% on "${assessmentTitle}" is below the passing score of ${passingScore}%`,
-  }),
-
-  // Certificate notifications
-  certificateIssued: (programName: string) => ({
-    type: NotificationType.CERTIFICATE_ISSUED,
-    title: "Certificate Issued",
-    message: `Congratulations! Your certificate for ${programName} is ready`,
-  }),
-
-  // General notifications
-  announcement: (title: string, message: string) => ({
-    type: NotificationType.ANNOUNCEMENT,
-    title,
-    message,
-  }),
-
-  reminder: (title: string, message: string) => ({
-    type: NotificationType.REMINDER,
-    title,
-    message,
-  }),
-
-  // Enrollment status notifications
-  enrollmentActivated: (programTitle: string) => ({
-    type: NotificationType.COURSE_UPDATE,
-    title: "Enrollment Activated",
-    message: `Your enrollment in ${programTitle} is now active`,
-  }),
-
-  enrollmentSuspended: (programTitle: string) => ({
-    type: NotificationType.ANNOUNCEMENT,
-    title: "Enrollment Suspended",
-    message: `Your enrollment in ${programTitle} has been suspended`,
-  }),
-
-  enrollmentDropped: (programTitle: string) => ({
-    type: NotificationType.ANNOUNCEMENT,
-    title: "Enrollment Dropped",
-    message: `Your enrollment in ${programTitle} has been dropped`,
-  }),
-};

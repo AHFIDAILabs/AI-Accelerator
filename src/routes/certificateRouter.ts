@@ -1,6 +1,4 @@
-// ============================================
 // src/routes/certificate.routes.ts
-// ============================================
 
 import express from "express";
 import {
@@ -14,6 +12,7 @@ import {
   getCertificatesByProgram,
   downloadCertificate,
   verifyCertificate,
+  uploadCertificateHtml,
 } from "../controllers/certificateController";
 import { protect } from "../middlewares/auth";
 import { authorize } from "../middlewares/adminAuth";
@@ -24,41 +23,11 @@ const certificateRouter = express.Router();
 // ============================================
 // PUBLIC ROUTES
 // ============================================
-
-// Verify certificate (anyone can verify)
-certificateRouter.get("/verify/:id", verifyCertificate);
+certificateRouter.get("/:id/verify", verifyCertificate);
 
 // ============================================
-// STUDENT ROUTES
+// ADMIN/INSTRUCTOR ROUTES  (specific paths first)
 // ============================================
-
-// Get my certificates
-certificateRouter.get(
-  "/me",
-  protect,
-  authorize(UserRole.STUDENT),
-  getStudentCertificates
-);
-
-// Download my certificate
-certificateRouter.get(
-  "/:id/download",
-  protect,
-  downloadCertificate
-);
-
-// Get single certificate
-certificateRouter.get(
-  "/:id",
-  protect,
-  getCertificateById
-);
-
-// ============================================
-// ADMIN/INSTRUCTOR ROUTES
-// ============================================
-
-// Get all certificates
 certificateRouter.get(
   "/",
   protect,
@@ -66,7 +35,6 @@ certificateRouter.get(
   getAllCertificates
 );
 
-// Issue certificate
 certificateRouter.post(
   "/issue",
   protect,
@@ -74,7 +42,13 @@ certificateRouter.post(
   issueCertificate
 );
 
-// Revoke certificate
+certificateRouter.post(
+  "/upload-html",
+  protect,
+  authorize(UserRole.ADMIN, UserRole.INSTRUCTOR),
+  uploadCertificateHtml
+);
+
 certificateRouter.post(
   "/revoke/:id",
   protect,
@@ -82,7 +56,6 @@ certificateRouter.post(
   revokeCertificate
 );
 
-// Get certificates by student
 certificateRouter.get(
   "/student/:studentId",
   protect,
@@ -90,7 +63,6 @@ certificateRouter.get(
   getCertificatesByStudent
 );
 
-// Get certificates by course
 certificateRouter.get(
   "/course/:courseId",
   protect,
@@ -98,12 +70,36 @@ certificateRouter.get(
   getCertificatesByCourse
 );
 
-// Get certificates by program
 certificateRouter.get(
   "/program/:programId",
   protect,
   authorize(UserRole.ADMIN, UserRole.INSTRUCTOR),
   getCertificatesByProgram
+);
+
+// ============================================
+// STUDENT ROUTES
+// ============================================
+certificateRouter.get(
+  "/me",
+  protect,
+  authorize(UserRole.STUDENT),
+  getStudentCertificates
+);
+
+// ============================================
+// WILDCARD ROUTES LAST  ← /:id must always be last
+// ============================================
+certificateRouter.get(
+  "/:id/download",
+  protect,
+  downloadCertificate
+);
+
+certificateRouter.get(
+  "/:id",
+  protect,
+  getCertificateById
 );
 
 export default certificateRouter;

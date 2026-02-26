@@ -6,6 +6,69 @@
 import { NotificationType } from "../models/Notification";
 
 export const NotificationTemplates = {
+  // ==============================
+  // Program notifications
+  // ==============================
+  programEnrolled: (programTitle: string) => ({
+    type: NotificationType.COURSE_UPDATE,
+    title: "Successfully Enrolled in Program",
+    message: `You have been enrolled in ${programTitle}`,
+  }),
+
+  programCompleted: (programTitle: string) => ({
+    type: NotificationType.CERTIFICATE_ISSUED,
+    title: "Program Completed!",
+    message: `Congratulations! You have completed ${programTitle}`,
+  }),
+
+  programPublished: (programTitle: string) => ({
+    type: NotificationType.ANNOUNCEMENT,
+    title: "New Program Available",
+    message: `${programTitle} is now available for enrollment`,
+  }),
+
+  // ==============================
+  // Course notifications
+  // ==============================
+  courseEnrolled: (courseTitle: string) => ({
+    type: NotificationType.COURSE_UPDATE,
+    title: "Course Access Granted",
+    message: `You now have access to ${courseTitle}`,
+  }),
+
+  coursePublished: (courseTitle: string, programTitle: string) => ({
+    type: NotificationType.COURSE_UPDATE,
+    title: "New Course Available",
+    message: `${courseTitle} is now available in ${programTitle}`,
+  }),
+
+  courseCompleted: (courseTitle: string) => ({
+    type: NotificationType.COURSE_UPDATE,
+    title: "Course Completed",
+    message: `Congratulations! You have completed ${courseTitle}`,
+  }),
+
+  // ==============================
+  // Module notifications
+  // ==============================
+  modulePublished: (moduleTitle: string, courseTitle: string) => ({
+    type: NotificationType.COURSE_UPDATE,
+    title: "New Module Available",
+    message: `New module "${moduleTitle}" is now available in ${courseTitle}`,
+  }),
+
+  // ==============================
+  // Lesson notifications
+  // ==============================
+  lessonPublished: (lessonTitle: string, moduleTitle: string) => ({
+    type: NotificationType.COURSE_UPDATE,
+    title: "New Lesson Available",
+    message: `New lesson "${lessonTitle}" is available in ${moduleTitle}`,
+  }),
+
+  // ==============================
+  // Assessment notifications
+  // ==============================
   assessmentPublished: (assessmentTitle: string, courseTitle: string) => ({
     type: NotificationType.ASSESSMENT_DUE,
     title: "New Assessment Available",
@@ -24,30 +87,54 @@ export const NotificationTemplates = {
     message: `Your assessment "${assessmentTitle}" has been graded. Score: ${score}%`,
   }),
 
-  courseEnrolled: (courseTitle: string) => ({
-    type: NotificationType.COURSE_UPDATE,
-    title: "Successfully Enrolled",
-    message: `You have been enrolled in ${courseTitle}`,
+  assessmentFailed: (assessmentTitle: string, score: number, passingScore: number) => ({
+    type: NotificationType.GRADE_POSTED,
+    title: "Assessment Requires Attention",
+    message: `Your score of ${score}% on "${assessmentTitle}" is below the passing score of ${passingScore}%`,
   }),
 
-  certificateIssued: (courseName: string) => ({
+  // ==============================
+  // Certificate notifications
+  // ==============================
+  certificateIssued: (programName: string) => ({
     type: NotificationType.CERTIFICATE_ISSUED,
     title: "Certificate Issued",
-    message: `Congratulations! Your certificate for ${courseName} is ready`,
+    message: `Congratulations! Your certificate for ${programName} is ready`,
   }),
 
-  modulePublished: (moduleTitle: string, courseTitle: string) => ({
+  // ==============================
+  // LiveSession notifications
+  // ==============================
+  liveSessionScheduled: (sessionTitle: string, courseTitle: string, startTime: Date, endTime: Date) => ({
     type: NotificationType.COURSE_UPDATE,
-    title: "New Module Available",
-    message: `New module "${moduleTitle}" is now available in ${courseTitle}`,
+    title: `Live Session Scheduled: ${sessionTitle}`,
+    message: `A live session for "${courseTitle}" has been scheduled from ${startTime.toLocaleString()} to ${endTime.toLocaleString()}.`,
   }),
 
-  lessonPublished: (lessonTitle: string, moduleTitle: string) => ({
+  // ==============================
+  // Enrollment status notifications
+  // ==============================
+  enrollmentActivated: (programTitle: string) => ({
     type: NotificationType.COURSE_UPDATE,
-    title: "New Lesson Available",
-    message: `New lesson "${lessonTitle}" is available in ${moduleTitle}`,
+    title: "Enrollment Activated",
+    message: `Your enrollment in ${programTitle} is now active`,
   }),
 
+  enrollmentSuspended: (programTitle: string) => ({
+    type: NotificationType.ANNOUNCEMENT,
+    title: "Enrollment Suspended",
+    message: `Your enrollment in ${programTitle} has been suspended`,
+  }),
+
+  enrollmentDropped: (programTitle: string) => ({
+    type: NotificationType.ANNOUNCEMENT,
+    title: "Enrollment Dropped",
+    message: `Your enrollment in ${programTitle} has been dropped`,
+  }),
+
+  // ==============================
+  // General notifications
+  // ==============================
   announcement: (title: string, message: string) => ({
     type: NotificationType.ANNOUNCEMENT,
     title,

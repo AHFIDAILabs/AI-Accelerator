@@ -31,6 +31,7 @@ import progressRouter from './routes/progressRouter';
 import submissionRouter from './routes/submissionRouter';
 import programRouter from './routes/programRouter';
 import instructorRouter from './routes/instructorRouter';
+import sessionRouter from './routes/sessionRouter';
 import { scholarshipRouter } from './routes/scholarshipRouter';
 import aiRouter from './routes/grogRouter';
 
@@ -300,6 +301,7 @@ app.get('/api', (_req: Request, res: Response) => {
       instructors: '/api/v1/instructors',
       scholarship: '/api/v1/scholarship',
       aiAssistant: "/api/v1/aiAssistant",
+      liveSession: '/api/v1/sessions',
     },
   });
 });
@@ -321,6 +323,7 @@ app.use('/api/v1/submissions', submissionRouter);
 app.use('/api/v1/instructors', instructorRouter);
 app.use("/api/v1/scholarship", scholarshipRouter)
 app.use("/api/v1/aiAssistant", aiRouter)
+app.use('/api/v1/sessions', sessionRouter);
 
 // Error Handling
 app.use(notFound);

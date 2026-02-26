@@ -11,6 +11,7 @@ import { NotificationType } from "../models/Notification";
 import { pushNotification } from "../utils/pushNotification";
 import { Enrollment } from "../models/Enrollment";
 import { Submission, SubmissionStatus } from "../models/Submission";
+import { uploadDocumentToCloudinary } from "../middlewares/claudinary";
 import path from "path";
 import fs from "fs";
 
@@ -42,10 +43,9 @@ export const issueCertificate = asyncHandler(async (req: AuthRequest, res: Respo
   const existing = await Certificate.findOne({ studentId, courseId, programId });
   if (existing) return res.status(400).json({ success: false, error: "Certificate already exists" });
 
-  // METADATA CALCULATION
+ // METADATA CALCULATION
   let metadata: any = {};
 
-  // 1️⃣ Completed projects for a course
   if (course) {
     const completedProjects = await Submission.countDocuments({
       studentId,
@@ -53,7 +53,7 @@ export const issueCertificate = asyncHandler(async (req: AuthRequest, res: Respo
       status: SubmissionStatus.GRADED
     });
 
-    const modules = await Module.find({ course: course._id });
+    const modules = await Module.find({ courseId: course._id }); // ✅ fixed: courseId not course
     metadata = {
       totalModules: modules.length,
       completedProjects,
@@ -62,14 +62,14 @@ export const issueCertificate = asyncHandler(async (req: AuthRequest, res: Respo
     };
   }
 
-  // 2️⃣ Program-level course completion
   if (program) {
-    const enrollment = await Enrollment.findOne({ studentId, program: program._id });
+    const enrollment = await Enrollment.findOne({ studentId, programId: program._id }); // ✅ fixed: programId not program
     let coursesCompleted = 0;
     if (enrollment) {
-      coursesCompleted = enrollment.coursesProgress.filter(cp => cp.status === "completed").length;
+      coursesCompleted = enrollment.coursesProgress.filter((cp: any) => cp.status === "completed").length;
     }
-    const totalCourses = program.courses.length;
+    // ✅ Count actual courses from DB
+    const totalCourses = await Course.countDocuments({ programId: program._id });
 
     metadata = {
       ...metadata,
@@ -370,3 +370,27 @@ export const verifyCertificate = asyncHandler(
     });
   }
 );
+
+
+// ==============================
+// UPLOAD CERTIFICATE HTML TO CLOUDINARY
+// ==============================
+export const uploadCertificateHtml = asyncHandler(async (req: AuthRequest, res: Response) => {
+  if (!req.user) return res.status(401).json({ success: false, error: "Unauthorized" });
+
+  const { htmlContent, studentName } = req.body;
+  if (!htmlContent) return res.status(400).json({ success: false, error: "htmlContent is required" });
+
+  try {
+    const buffer = Buffer.from(htmlContent, "utf-8");
+    const safeName = (studentName || "certificate").replace(/\s+/g, "-").toLowerCase();
+    const folder   = "certificates";
+
+    const { fileUrl } = await uploadDocumentToCloudinary(buffer, folder, "text/html");
+
+    return res.status(200).json({ success: true, data: { pdfUrl: fileUrl } });
+  } catch (err: any) {
+    console.error("Certificate HTML upload error:", err);
+    return res.status(500).json({ success: false, error: "Failed to upload certificate" });
+  }
+});
