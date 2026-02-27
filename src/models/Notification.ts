@@ -22,7 +22,7 @@ export interface INotification extends Document {
   message: string;
 
   relatedId?: mongoose.Types.ObjectId;
-  relatedModel?: 'Program' | 'Course' | 'Module' | 'Lesson' | 'Assessment' | 'Certificate' | 'Submission' | 'Enrollment' | 'LiveSession';
+  relatedModel?: 'Program' | 'Course' | 'Module' | 'Lesson' | 'Assessment' | 'Certificate' | 'Submission' | 'Enrollment' | 'LiveSession' | 'CommunityPost' | 'CommunityReply';
   url?: string;
 
   isRead: boolean;
@@ -46,7 +46,7 @@ const notificationSchema = new Schema<INotification>(
 
     relatedModel: {
       type: String,
-      enum: ['Program', 'Course', 'Module', 'Lesson', 'Assessment', 'Certificate', 'Submission', 'Enrollment', 'LiveSession'],
+      enum: ['Program', 'Course', 'Module', 'Lesson', 'Assessment', 'Certificate', 'Submission', 'Enrollment', 'LiveSession', 'CommunityPost', 'CommunityReply'],
     },
 
     url: String,

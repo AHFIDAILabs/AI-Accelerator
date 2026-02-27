@@ -146,4 +146,17 @@ export const NotificationTemplates = {
     title,
     message,
   }),
+
+  communityReply: (postTitle: string, replierName: string) => ({
+  type: NotificationType.OTHER,
+  title: "New reply on your post",
+  message: `${replierName} replied to "${postTitle}"`,
+}),
+
+communityAccepted: (postTitle: string) => ({
+  type: NotificationType.OTHER,
+  title: "Your reply was accepted!",
+  message: `Your answer in "${postTitle}" was marked as the accepted answer.`,
+}),
+
 };

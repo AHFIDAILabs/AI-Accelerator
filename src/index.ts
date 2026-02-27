@@ -34,6 +34,8 @@ import instructorRouter from './routes/instructorRouter';
 import sessionRouter from './routes/sessionRouter';
 import { scholarshipRouter } from './routes/scholarshipRouter';
 import aiRouter from './routes/grogRouter';
+import contactRouter from './routes/contactRouter'
+import communityRouter from './routes/communityRouter';
 
 
 // Error handler middleware
@@ -302,6 +304,8 @@ app.get('/api', (_req: Request, res: Response) => {
       scholarship: '/api/v1/scholarship',
       aiAssistant: "/api/v1/aiAssistant",
       liveSession: '/api/v1/sessions',
+      contact: '/api/v1/contact',
+      community: '/api/v1/community',
     },
   });
 });
@@ -324,6 +328,8 @@ app.use('/api/v1/instructors', instructorRouter);
 app.use("/api/v1/scholarship", scholarshipRouter)
 app.use("/api/v1/aiAssistant", aiRouter)
 app.use('/api/v1/sessions', sessionRouter);
+app.use("/api/v1/contact", contactRouter);
+app.use('/api/v1/community', communityRouter);
 
 // Error Handling
 app.use(notFound);
