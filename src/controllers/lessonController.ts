@@ -377,37 +377,45 @@ const getOrCreateProgress = async (
     isPublished: true,
   });
 
-  const progress = await Progress.findOneAndUpdate(
-    { studentId, courseId },
-    {
-      $setOnInsert: {
-        studentId,
-        courseId,
-        programId,
-        modules: [],
-        overallProgress: 0,
-        completedLessons: 0,
-        totalLessons,
-        completedAssessments: 0,
-        totalAssessments: 0,
-        averageScore: 0,
-        totalTimeSpent: 0,
-        enrolledAt: new Date(),
+  try {
+    const progress = await Progress.findOneAndUpdate(
+      { studentId, courseId },
+      {
+        $setOnInsert: {
+          studentId,
+          courseId,
+          programId,
+          modules: [],
+          overallProgress: 0,
+          completedLessons: 0,
+          totalLessons,
+          completedAssessments: 0,
+          totalAssessments: 0,
+          averageScore: 0,
+          totalTimeSpent: 0,
+          enrolledAt: new Date(),
+        },
+        $set: { lastAccessedAt: new Date() },
       },
-      $set: { lastAccessedAt: new Date() },
-    },
-    {
-      upsert: true,
-      new: true,
-      setDefaultsOnInsert: true,
+      {
+        upsert: true,
+        new: true,
+        setDefaultsOnInsert: true,
+      }
+    );
+
+    if (!progress) throw new Error("Failed to initialize progress");
+    return progress;
+
+  } catch (err: any) {
+    // ── Duplicate key race condition: another request already inserted ──
+    // Just find and return the existing document
+    if (err.code === 11000) {
+      const existing = await Progress.findOne({ studentId, courseId });
+      if (existing) return existing;
     }
-  );
-
-  if (!progress) {
-    throw new Error("Failed to initialize progress");
+    throw err;
   }
-
-  return progress;
 };
 
 // ============================================
