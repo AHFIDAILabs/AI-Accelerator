@@ -140,9 +140,9 @@ export const getAllCoursesAdmin = asyncHandler(async (req: AuthRequest, res: Res
   if (programId) filter.programId = programId;
 
   // Instructors should only see their own (unless admin)
-  if (req.user?.role === UserRole.INSTRUCTOR) {
-    filter.$or = [{ createdBy: req.user._id }, { instructorId: req.user._id }];
-  }
+  // if (req.user?.role === UserRole.INSTRUCTOR) {
+  //   filter.$or = [{ createdBy: req.user._id }, { instructorId: req.user._id }];
+  // }
 
   let query = Course.find(filter)
     .populate('createdBy', 'firstName lastName')
@@ -287,10 +287,10 @@ export const updateCourse = asyncHandler(async (req: AuthRequest, res: Response)
     return;
   }
 
-  if (req.user.role === UserRole.INSTRUCTOR && course.createdBy.toString() !== req.user._id.toString()) {
-    res.status(403).json({ success: false, error: 'You can only update your own courses' });
-    return;
-  }
+  // if (req.user.role === UserRole.INSTRUCTOR && course.createdBy.toString() !== req.user._id.toString()) {
+  //   res.status(403).json({ success: false, error: 'You can only update your own courses' });
+  //   return;
+  // }
 
   const {
     order,
@@ -535,10 +535,10 @@ export const toggleCoursePublish = asyncHandler(async (req: AuthRequest, res: Re
   }
 
   // Instructors can only toggle their own course
-  if (req.user?.role === UserRole.INSTRUCTOR && course.createdBy.toString() !== req.user._id.toString()) {
-    res.status(403).json({ success: false, error: 'You can only publish/unpublish your own courses' });
-    return;
-  }
+  // if (req.user?.role === UserRole.INSTRUCTOR && course.createdBy.toString() !== req.user._id.toString()) {
+  //   res.status(403).json({ success: false, error: 'You can only publish/unpublish your own courses' });
+  //   return;
+  // }
 
 
   if (!course.isPublished) {
