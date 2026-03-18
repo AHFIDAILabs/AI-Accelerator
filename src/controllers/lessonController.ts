@@ -843,7 +843,7 @@ export const getLessonsByModule = asyncHandler(async (req: AuthRequest, res: Res
 export const updateLesson = asyncHandler(async (req: AuthRequest, res: Response) => {
   const lesson = await Lesson.findById(req.params.id).populate({
     path: 'moduleId',
-    populate: { path: 'courseId', select: 'createdBy' }
+    populate: { path: 'courseId', select: 'createdBy programId' } // ← added programId
   });
 
   if (!lesson) {
@@ -851,34 +851,26 @@ export const updateLesson = asyncHandler(async (req: AuthRequest, res: Response)
     return;
   }
 
-  // Check permissions for instructors
+  // Instructors can update any lesson (ownership check removed per policy)
+  // But we still unpublish so admin re-approves
   if (req.user?.role === "instructor") {
-    const moduleDoc = lesson.moduleId as any;
-    const course = moduleDoc.courseId as any;
-
-    if (course.createdBy.toString() !== req.user._id.toString()) {
-      res.status(403).json({ success: false, error: "Cannot update this lesson" });
-      return;
-    }
-
-    // Unpublish lesson when instructor updates
     lesson.isPublished = false;
   }
 
   // Remove resources by index if requested
-if (req.body.removeResourceIndexes) {
-  try {
-    const indexesToRemove: number[] = typeof req.body.removeResourceIndexes === 'string'
-      ? JSON.parse(req.body.removeResourceIndexes)
-      : req.body.removeResourceIndexes;
+  if (req.body.removeResourceIndexes) {
+    try {
+      const indexesToRemove: number[] = typeof req.body.removeResourceIndexes === 'string'
+        ? JSON.parse(req.body.removeResourceIndexes)
+        : req.body.removeResourceIndexes;
 
-    lesson.resources = lesson.resources.filter(
-      (_: any, i: number) => !indexesToRemove.includes(i)
-    );
-  } catch (e) {
-    console.error('Error parsing removeResourceIndexes:', e);
+      lesson.resources = lesson.resources.filter(
+        (_: any, i: number) => !indexesToRemove.includes(i)
+      );
+    } catch (e) {
+      console.error('Error parsing removeResourceIndexes:', e);
+    }
   }
-}
 
   // Handle uploaded files
   const files = req.files as { [fieldname: string]: Express.Multer.File[] };
@@ -887,48 +879,25 @@ if (req.body.removeResourceIndexes) {
 
     if (files.video) {
       files.video.forEach((f) => {
-        newResources.push({
-          title: f.originalname,
-          type: LessonType.VIDEO,
-          url: f.path,
-          size: f.size,
-        });
+        newResources.push({ title: f.originalname, type: LessonType.VIDEO, url: f.path, size: f.size });
       });
     }
-
     if (files.documents) {
       files.documents.forEach((f) => {
-        newResources.push({
-          title: f.originalname,
-          type: LessonType.PDF,
-          url: f.path,
-          size: f.size,
-        });
+        newResources.push({ title: f.originalname, type: LessonType.PDF, url: f.path, size: f.size });
       });
     }
-
     if (files.slides) {
       files.slides.forEach((f) => {
-        newResources.push({
-          title: f.originalname,
-          type: LessonType.SLIDES,
-          url: f.path,
-          size: f.size,
-        });
+        newResources.push({ title: f.originalname, type: LessonType.SLIDES, url: f.path, size: f.size });
+      });
+    }
+    if (files.resources) {
+      files.resources.forEach((f) => {
+        newResources.push({ title: f.originalname, type: LessonType.OTHER, url: f.path, size: f.size });
       });
     }
 
-    if (files.resources) {
-      files.resources.forEach((f) => {
-        newResources.push({
-          title: f.originalname,
-          type: LessonType.OTHER,
-          url: f.path,
-          size: f.size,
-        });
-      });
-    }
-    // Merge with existing resources
     lesson.resources = [...(lesson.resources || []), ...newResources];
   }
 
@@ -947,10 +916,16 @@ if (req.body.removeResourceIndexes) {
 
   await lesson.save();
 
-  invalidateModuleCache(lesson.moduleId.toString());
-  invalidateCourseCache((lesson.moduleId as any).courseId.toString());
-  invalidateProgramCache(((lesson.moduleId as any).courseId as any).programId.toString());
-  cache.delete(`lesson:full:${lesson._id}`); // lesson-level cache
+  // ── Safe cache invalidation ──────────────────────────────
+  const moduleDoc = lesson.moduleId as any;
+  const courseDoc = moduleDoc?.courseId;
+  const programId = courseDoc?.programId;
+
+  invalidateModuleCache(moduleDoc?._id?.toString() ?? moduleDoc?.toString());
+  if (courseDoc?._id) invalidateCourseCache(courseDoc._id.toString());
+  if (programId) invalidateProgramCache(programId.toString());
+  cache.delete(`lesson:full:${lesson._id}`);
+  // ────────────────────────────────────────────────────────
 
   res.json({
     success: true,

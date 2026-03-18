@@ -15,7 +15,8 @@ const imageStorage = new CloudinaryStorage({
     folder: "ai-accelerator/images",
     allowed_formats: ["jpg", "jpeg", "png", "gif", "webp"],
     transformation: [{ width: 1920, height: 1080, crop: "limit" }, { quality: "auto" }],
-    public_id: `${Date.now()}-${file.originalname.split(".")[0]}`,
+    public_id: `${Date.now()}-${file.originalname.split(".")[0].replace(/[^a-zA-Z0-9_-]/g, '_')}`,
+
   }),
 });
 
@@ -26,7 +27,8 @@ const documentStorage = new CloudinaryStorage({
     folder: "ai-accelerator/documents",
     allowed_formats: ["pdf", "doc", "docx", "ppt", "pptx", "txt"],
     resource_type: "raw" as const,
-    public_id: `${Date.now()}-${file.originalname.split(".")[0]}`,
+    public_id: `${Date.now()}-${file.originalname.split(".")[0].replace(/[^a-zA-Z0-9_-]/g, '_')}`,
+
   }),
 });
 
@@ -37,7 +39,8 @@ const videoStorage = new CloudinaryStorage({
     folder: "ai-accelerator/videos",
     allowed_formats: ["mp4", "avi", "mov", "wmv", "webm"],
     resource_type: "video" as const,
-    public_id: `${Date.now()}-${file.originalname.split(".")[0]}`,
+    public_id: `${Date.now()}-${file.originalname.split(".")[0].replace(/[^a-zA-Z0-9_-]/g, '_')}`,
+
   }),
 });
 
@@ -60,7 +63,8 @@ const generalStorage = new CloudinaryStorage({
       resourceType = "raw";
     }
 
-    return { folder, resource_type: resourceType, public_id: `${Date.now()}-${file.originalname.split(".")[0]}` };
+    return { folder, resource_type: resourceType, public_id: `${Date.now()}-${file.originalname.split(".")[0].replace(/[^a-zA-Z0-9_-]/g, '_')}`,
+ };
   },
 });
 
