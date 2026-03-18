@@ -30,7 +30,7 @@ const SEED_USERS = [
     firstName: 'Admin',
     lastName: 'User',
     email: 'admin@example.com',
-    password: 'Admin123!',          // ← this is what you type to log in
+    password: 'Admin123!',          
     role: UserRole.ADMIN,
     status: UserStatus.ACTIVE,
   },
@@ -38,7 +38,7 @@ const SEED_USERS = [
     firstName: 'Instructor',
     lastName: 'Demo',
     email: 'instructor@example.com',
-    password: 'Instructor123!',     // ← this is what you type to log in
+    password: 'Instructor123!',     
     role: UserRole.INSTRUCTOR,
     status: UserStatus.ACTIVE,
   },

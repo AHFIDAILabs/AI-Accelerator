@@ -125,67 +125,67 @@ const skipRateLimitInDev = (req: Request) => {
 };
 
 // ✅ General API rate limiter - very lenient in dev
-const generalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: isDevelopment ? 10000 : 100, // 10k in dev, 100 in prod
-  message: {
-    success: false,
-    error: 'Too many requests from this IP, please try again later.',
-    retryAfter: '15 minutes'
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
-  skip: skipRateLimitInDev, // Skip entirely for localhost in dev
-  // ✅ Don't block on headers issues
-  skipFailedRequests: isDevelopment,
-  handler: (req, res) => {
-    if (isDevelopment) {
-      console.warn('⚠️ Rate limit reached (dev mode):', req.path);
-    }
-    res.status(429).json({
-      success: false,
-      error: 'Too many requests, please try again later.',
-      retryAfter: '15 minutes'
-    });
-  }
-});
+// const generalLimiter = rateLimit({
+//   windowMs: 15 * 60 * 1000, // 15 minutes
+//   max: isDevelopment ? 10000 : 100, // 10k in dev, 100 in prod
+//   message: {
+//     success: false,
+//     error: 'Too many requests from this IP, please try again later.',
+//     retryAfter: '15 minutes'
+//   },
+//   standardHeaders: true,
+//   legacyHeaders: false,
+//   skip: skipRateLimitInDev, // Skip entirely for localhost in dev
+//   // ✅ Don't block on headers issues
+//   skipFailedRequests: isDevelopment,
+//   handler: (req, res) => {
+//     if (isDevelopment) {
+//       console.warn('⚠️ Rate limit reached (dev mode):', req.path);
+//     }
+//     res.status(429).json({
+//       success: false,
+//       error: 'Too many requests, please try again later.',
+//       retryAfter: '15 minutes'
+//     });
+//   }
+// });
 
 // ✅ Apply general limiter only to non-auth routes in dev
-if (isDevelopment) {
-  // In dev, only apply to routes that aren't auth-related
-  app.use('/api/v1/', (req, res, next) => {
-    if (req.path.includes('/auth/me') || req.path.includes('/auth/refresh')) {
-      return next(); // Skip rate limiting for auth checks
-    }
-    return generalLimiter(req, res, next);
-  });
-} else {
-  // In production, apply to all routes
-  app.use('/api/', generalLimiter);
-}
+// if (isDevelopment) {
+//   // In dev, only apply to routes that aren't auth-related
+//   app.use('/api/v1/', (req, res, next) => {
+//     if (req.path.includes('/auth/me') || req.path.includes('/auth/refresh')) {
+//       return next(); // Skip rate limiting for auth checks
+//     }
+//     return generalLimiter(req, res, next);
+//   });
+// } else {
+//   // In production, apply to all routes
+//   app.use('/api/', generalLimiter);
+// }
 
 // ✅ Auth-specific limiter - DISABLED in development
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: isDevelopment ? 10000 : 10, // Unlimited in dev, 10 in prod
-  message: {
-    success: false,
-    error: 'Too many authentication attempts, try again later.',
-    retryAfter: '15 minutes'
-  },
-  skipSuccessfulRequests: true,
-  skip: (req) => {
-    // ✅ Always skip in development
-    if (isDevelopment) return true;
+// const authLimiter = rateLimit({
+//   windowMs: 15 * 60 * 1000, // 15 minutes
+//   max: isDevelopment ? 10000 : 10, // Unlimited in dev, 10 in prod
+//   message: {
+//     success: false,
+//     error: 'Too many authentication attempts, try again later.',
+//     retryAfter: '15 minutes'
+//   },
+//   skipSuccessfulRequests: true,
+//   skip: (req) => {
+//     // ✅ Always skip in development
+//     if (isDevelopment) return true;
     
-    // ✅ Also skip for /auth/me and /auth/refresh even in production
-    if (req.path.includes('/auth/me') || req.path.includes('/auth/refresh')) {
-      return true;
-    }
+//     // ✅ Also skip for /auth/me and /auth/refresh even in production
+//     if (req.path.includes('/auth/me') || req.path.includes('/auth/refresh')) {
+//       return true;
+//     }
     
-    return false;
-  },
-});
+//     return false;
+//   },
+// });
 
 // Static files
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
