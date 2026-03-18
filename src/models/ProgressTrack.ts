@@ -54,7 +54,7 @@ export interface IProgress extends Document {
 
 const progressSchema = new Schema<IProgress>(
   {
-    studentId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    studentId: { type: Schema.Types.ObjectId, ref: 'User' },
     programId: { type: Schema.Types.ObjectId, ref: 'Program' },
     courseId: { type: Schema.Types.ObjectId, ref: 'Course' },
 
@@ -63,7 +63,7 @@ const progressSchema = new Schema<IProgress>(
         moduleId: { type: Schema.Types.ObjectId, ref: 'Module', required: true },
         lessons: [
           {
-            lessonId: { type: Schema.Types.ObjectId, ref: 'Lesson', required: true },
+            lessonId: { type: Schema.Types.ObjectId, ref: 'Lesson' },
             status: { type: String, enum: ['not_started', 'in_progress', 'completed'], default: 'not_started' },
             startedAt: Date,
             completedAt: Date,
@@ -72,7 +72,7 @@ const progressSchema = new Schema<IProgress>(
         ],
         assessments: [
           {
-            assessmentId: { type: Schema.Types.ObjectId, ref: 'Assessment', required: true },
+            assessmentId: { type: Schema.Types.ObjectId, ref: 'Assessment' },
             score: Number,
             status: { type: String, enum: ['not_started', 'in_progress', 'completed'], default: 'not_started' },
             startedAt: Date,
