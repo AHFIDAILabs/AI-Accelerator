@@ -104,8 +104,9 @@ export const uploadGeneral = multer({ storage: generalStorage, fileFilter: gener
 
 export const uploadMixedFiles = uploadGeneral.fields([
   { name: "coverImage", maxCount: 1 },
-  { name: "video", maxCount: 1 },
+  { name: "video", maxCount: 5 },
   { name: "documents", maxCount: 10 },
+    { name: "slides", maxCount: 10 },   
   { name: "resources", maxCount: 20 },
 ]);
 

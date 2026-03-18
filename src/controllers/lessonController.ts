@@ -865,6 +865,21 @@ export const updateLesson = asyncHandler(async (req: AuthRequest, res: Response)
     lesson.isPublished = false;
   }
 
+  // Remove resources by index if requested
+if (req.body.removeResourceIndexes) {
+  try {
+    const indexesToRemove: number[] = typeof req.body.removeResourceIndexes === 'string'
+      ? JSON.parse(req.body.removeResourceIndexes)
+      : req.body.removeResourceIndexes;
+
+    lesson.resources = lesson.resources.filter(
+      (_: any, i: number) => !indexesToRemove.includes(i)
+    );
+  } catch (e) {
+    console.error('Error parsing removeResourceIndexes:', e);
+  }
+}
+
   // Handle uploaded files
   const files = req.files as { [fieldname: string]: Express.Multer.File[] };
   if (files) {
@@ -913,7 +928,6 @@ export const updateLesson = asyncHandler(async (req: AuthRequest, res: Response)
         });
       });
     }
-
     // Merge with existing resources
     lesson.resources = [...(lesson.resources || []), ...newResources];
   }
