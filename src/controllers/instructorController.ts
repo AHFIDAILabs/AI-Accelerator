@@ -243,16 +243,17 @@ export const createInstructorCourse = asyncHandler(
 // @desc    Get all courses taught by instructor
 // @route   GET /api/v1/instructors/courses
 // @access  Instructor only
+// AFTER
 export const getInstructorCourses = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!req.user) return res.status(401).json({ success: false });
 
-  const baseFilter: any = { instructorId: req.user._id };   // ✅ FIXED
+  const baseFilter: any = {};  // ← all courses, no instructor filter
 
   if (req.query.isPublished !== undefined)
     baseFilter.isPublished = req.query.isPublished === 'true';
 
   let query = Course.find(baseFilter)
-    .populate('programId', 'title createdBy createdAt coverImage');    // programId is correct
+    .populate('programId', 'title createdBy createdAt coverImage');
 
   const helper = new QueryHelper(query, req.query)
     .search(['title', 'description'])
@@ -281,12 +282,9 @@ export const getInstructorCourse = asyncHandler(
       return res.status(401).json({ success: false, error: 'Not authorized' });
     }
 
-    const course = await Course.findOne({
-      _id: req.params.id,
-      instructorId: req.user._id      // ✅ FIXED
-    })
-    .populate('programId', 'title createdBy createdAt')  // programId is correct;
-
+ const course = await Course.findById(req.params.id)
+  .populate('programId', 'title createdBy createdAt')
+  
     if (!course) {
       return res.status(404).json({
         success: false,
@@ -546,10 +544,10 @@ export const getStudentCourseProgress = asyncHandler(
     const course = await Course.findById(courseId)
       .select("_id title slug description instructorId programId coverImage");
 
-    if (!course || !course.instructorId.equals(req.user._id)) {
+    if (!course) {
       return res.status(403).json({
         success: false,
-        error: "Access denied"
+        error: "No course found"
       });
     }
 
@@ -904,7 +902,7 @@ export const getSubmissionById = asyncHandler(
 export const sendCourseAnnouncement = asyncHandler(async (req: AuthRequest, res: Response) => {
   if (!req.user) return res.status(401).json({ success: false });
 
-  const course = await Course.findOne({ _id: req.params.courseId, instructorId: req.user._id });
+  const course = await Course.findOne({ _id: req.params.courseId });
   if (!course) return res.status(403).json({ success: false });
 
   const enrollments = await Enrollment.find({ courseId: course._id, status: 'active' }).populate('studentId');
@@ -989,7 +987,7 @@ export const getInstructorModules = asyncHandler(async (req: AuthRequest, res: R
   }
 
   // Find courses taught by instructor
-  const courses = await Course.find({ instructorId: req.user._id }).select("_id title programId approvalStatus isPublished coverImage");
+  const courses = await Course.find({}).select("_id title programId approvalStatus isPublished coverImage");
 
   const modules = await Module.find({
     courseId: { $in: courses.map((c) => c._id) }
